@@ -3,12 +3,17 @@
 import { Bell, HelpCircle, User } from "lucide-react"
 import { Button } from "@/components/ui/button"
 
-export function Header() {
+interface HeaderProps {
+  title: string
+  description: string
+}
+
+export function Header({ title, description }: HeaderProps) {
   return (
     <header className="h-14 border-b border-border bg-card flex items-center justify-between px-6">
       <div>
-        <h2 className="text-lg font-semibold text-foreground">Clinical Case Input</h2>
-        <p className="text-sm text-muted-foreground">Enter patient data for PCT-guided evaluation</p>
+        <h2 className="text-lg font-semibold text-foreground">{title}</h2>
+        <p className="text-sm text-muted-foreground">{description}</p>
       </div>
       
       <div className="flex items-center gap-2">

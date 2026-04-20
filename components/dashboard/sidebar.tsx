@@ -10,13 +10,17 @@ import {
 } from "lucide-react"
 
 const menuItems = [
-  { name: "Case Input", icon: ClipboardList, active: true },
-  { name: "Evaluation Setup", icon: Settings2, active: false },
-  { name: "Benchmark Results", icon: BarChart3, active: false },
-  { name: "Reports", icon: FileText, active: false },
+  { name: "Case Input", icon: ClipboardList, href: "/" },
+  { name: "Evaluation Setup", icon: Settings2, href: "/evaluation-setup" },
+  { name: "Benchmark Results", icon: BarChart3, href: "/benchmark-results" },
+  { name: "Reports", icon: FileText, href: "/reports" },
 ]
 
-export function Sidebar() {
+interface SidebarProps {
+  activePage?: string
+}
+
+export function Sidebar({ activePage = "Case Input" }: SidebarProps) {
   return (
     <aside className="w-64 border-r border-border bg-card flex flex-col">
       <div className="p-4 border-b border-border">
@@ -33,21 +37,25 @@ export function Sidebar() {
       
       <nav className="flex-1 p-3">
         <ul className="space-y-1">
-          {menuItems.map((item) => (
-            <li key={item.name}>
-              <button
-                className={cn(
-                  "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
-                  item.active
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                )}
-              >
-                <item.icon className="w-4 h-4" />
-                {item.name}
-              </button>
-            </li>
-          ))}
+          {menuItems.map((item) => {
+            const isActive = item.name === activePage
+            return (
+              <li key={item.name}>
+                <a
+                  href={item.href}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                    isActive
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  )}
+                >
+                  <item.icon className="w-4 h-4" />
+                  {item.name}
+                </a>
+              </li>
+            )
+          })}
         </ul>
       </nav>
       
