@@ -131,10 +131,25 @@ export interface EvaluationConfig {
   promptTemplateText?: string
 }
 
+export interface BenchmarkConfig {
+  configId: string
+  label: string
+  configType: 'model_only' | 'workflow'
+  providerId: 'openrouter' | 'groq'
+  modelId?: string
+  promptTemplateId?: string
+  promptTemplateText?: string
+  workflowId?: string
+  workflow?: EvaluationWorkflow
+  stepCount?: number
+  toolAssisted?: boolean
+}
+
 export interface LlmEvaluationResult {
   configId: string
   modelLabel: string
   configLabel?: string
+  configType?: 'model_only' | 'workflow'
   workflowType?: WorkflowType
   workflowName?: string
   workflowStepCount?: number

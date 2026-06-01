@@ -56,6 +56,7 @@ type ModelRanking = {
   configId: string
   modelLabel: string
   configLabel?: string
+  configType?: string
   workflowType?: string
   workflowName?: string
   workflowStepCount?: number
@@ -156,6 +157,7 @@ function buildModelRankings(batch: BatchEvaluationResponse): ModelRanking[] {
         configId,
         modelLabel: modelResults[0]?.modelLabel ?? configId,
         configLabel: modelResults[0]?.configLabel,
+        configType: modelResults[0]?.configType,
         workflowType: modelResults[0]?.workflowType,
         workflowName: modelResults[0]?.workflowName,
         workflowStepCount: modelResults[0]?.workflowStepCount,
@@ -422,8 +424,13 @@ export default function ReportsPage() {
                           <p className="text-xs text-muted-foreground">
                             {config.casesEvaluated} cases evaluated | {config.failedCalls} failed calls
                           </p>
+                          {config.configType ? (
+                            <Badge variant="secondary" className="mt-2">
+                              {config.configType === "workflow" ? "Workflow" : "Model-only"}
+                            </Badge>
+                          ) : null}
                           {config.workflowType ? (
-                            <Badge variant="outline" className="mt-2">
+                            <Badge variant="outline" className="mt-2 ml-2">
                               {config.workflowType}
                             </Badge>
                           ) : null}
@@ -472,8 +479,13 @@ export default function ReportsPage() {
                       <div className="flex-1 min-w-0">
                         <h4 className="font-semibold text-lg">{bestConfiguration.configLabel ?? bestConfiguration.modelLabel}</h4>
                         <p className="text-sm text-muted-foreground break-all">{bestConfiguration.configId}</p>
+                        {bestConfiguration.configType ? (
+                          <Badge variant="secondary" className="mt-2">
+                            {bestConfiguration.configType === "workflow" ? "Workflow" : "Model-only"}
+                          </Badge>
+                        ) : null}
                         {bestConfiguration.workflowType ? (
-                          <Badge variant="outline" className="mt-2">
+                          <Badge variant="outline" className="mt-2 ml-2">
                             {bestConfiguration.workflowType}
                           </Badge>
                         ) : null}

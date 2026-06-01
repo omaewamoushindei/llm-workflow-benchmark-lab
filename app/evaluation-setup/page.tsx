@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge"
 import { benchmarkCases, type BenchmarkCase } from "@/lib/benchmark-cases"
 import { DEFAULT_EVALUATION_WORKFLOWS } from "@/lib/evaluation-workflows"
 import { DEFAULT_PROMPT_TEMPLATES, getDefaultPromptTemplate } from "@/lib/prompt-templates"
-import type { EvaluationConfig, EvaluationWorkflow, PromptTemplate, WorkflowStep, WorkflowType } from "@/lib/types"
+import type { BenchmarkConfig, EvaluationConfig, EvaluationWorkflow, PromptTemplate, WorkflowStep, WorkflowType } from "@/lib/types"
 import { 
   Play, 
   Save, 
@@ -188,6 +188,9 @@ type EvaluationSettings = {
   defaultPromptTemplateId: string
   evaluationConfigs?: EvaluationConfig[]
   selectedWorkflowIds?: string[]
+  includeRawModelBaselines?: boolean
+  includeStructuredPromptBaselines?: boolean
+  includeEnabledWorkflows?: boolean
 }
 
 const workflowTypeOptions: Array<{ value: WorkflowType; label: string; description: string }> = [
@@ -329,11 +332,27 @@ function parseEvaluationSettings(raw: string | null): EvaluationSettings | null 
     const selectedWorkflowIds = Array.isArray(maybe.selectedWorkflowIds)
       ? maybe.selectedWorkflowIds.filter((id): id is string => typeof id === "string")
       : DEFAULT_EVALUATION_WORKFLOWS.map((workflow) => workflow.id)
+    const includeRawModelBaselines = maybe.includeRawModelBaselines !== false
+    const includeStructuredPromptBaselines = maybe.includeStructuredPromptBaselines !== false
+    const includeEnabledWorkflows = maybe.includeEnabledWorkflows !== false
 
-    return { providerId, selectedModelIds, defaultPromptTemplateId, evaluationConfigs, selectedWorkflowIds }
+    return {
+      providerId,
+      selectedModelIds,
+      defaultPromptTemplateId,
+      evaluationConfigs,
+      selectedWorkflowIds,
+      includeRawModelBaselines,
+      includeStructuredPromptBaselines,
+      includeEnabledWorkflows,
+    }
   } catch {
     return null
   }
+}
+
+function toSafeConfigId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, "-")
 }
 
 function readPrice(value: string | null): number {
@@ -513,6 +532,9 @@ export default function EvaluationSetupPage() {
   const [providerTesting, setProviderTesting] = useState<ProviderId | null>(null)
   const [providerTestStatus, setProviderTestStatus] = useState<Partial<Record<ProviderId, string>>>({})
   const [defaultPromptTemplateId, setDefaultPromptTemplateId] = useState(DEFAULT_MODEL_ONLY_PROMPT_TEMPLATE_ID)
+  const [includeRawModelBaselines, setIncludeRawModelBaselines] = useState(true)
+  const [includeStructuredPromptBaselines, setIncludeStructuredPromptBaselines] = useState(true)
+  const [includeEnabledWorkflows, setIncludeEnabledWorkflows] = useState(true)
   const [selectedCriteria, setSelectedCriteria] = useState<string[]>(["guideline", "explainability", "safety"])
   const [numberOfCases, setNumberOfCases] = useState("10")
   const [batchRun, setBatchRun] = useState(true)
@@ -549,6 +571,9 @@ export default function EvaluationSetupPage() {
     setDefaultPromptTemplateId(existing.defaultPromptTemplateId)
     setEvaluationConfigs(existing.evaluationConfigs ?? [])
     setSelectedWorkflowIds(existing.selectedWorkflowIds ?? DEFAULT_EVALUATION_WORKFLOWS.map((workflow) => workflow.id))
+    setIncludeRawModelBaselines(existing.includeRawModelBaselines !== false)
+    setIncludeStructuredPromptBaselines(existing.includeStructuredPromptBaselines !== false)
+    setIncludeEnabledWorkflows(existing.includeEnabledWorkflows !== false)
   }, [hasMounted])
 
   useEffect(() => {
@@ -591,13 +616,26 @@ export default function EvaluationSetupPage() {
       defaultPromptTemplateId,
       evaluationConfigs,
       selectedWorkflowIds,
+      includeRawModelBaselines,
+      includeStructuredPromptBaselines,
+      includeEnabledWorkflows,
     }
     try {
       window.localStorage.setItem(EVALUATION_SETTINGS_STORAGE_KEY, JSON.stringify(settings))
     } catch {
       // ignore localStorage write errors (e.g., storage disabled)
     }
-  }, [defaultPromptTemplateId, evaluationConfigs, hasMounted, selectedModels, selectedProviderId, selectedWorkflowIds])
+  }, [
+    defaultPromptTemplateId,
+    evaluationConfigs,
+    hasMounted,
+    includeEnabledWorkflows,
+    includeRawModelBaselines,
+    includeStructuredPromptBaselines,
+    selectedModels,
+    selectedProviderId,
+    selectedWorkflowIds,
+  ])
 
   const refreshModels = async () => {
     if (!hasMounted) return
@@ -1212,6 +1250,78 @@ export default function EvaluationSetupPage() {
     )
   }
 
+  const getPromptTemplateForRun = (templateId: string): PromptTemplate => {
+    return (
+      promptTemplates.find((template) => template.id === templateId) ??
+      promptTemplates.find((template) => template.id === DEFAULT_MODEL_ONLY_PROMPT_TEMPLATE_ID) ??
+      DEFAULT_PROMPT_TEMPLATES[0]
+    )
+  }
+
+  const getStructuredPromptTemplateForRun = (): PromptTemplate => {
+    return (
+      promptTemplates.find((template) => template.id === "default-structured-pct-json") ??
+      promptTemplates.find((template) => template.expectedOutputSchema === "pct_json") ??
+      getPromptTemplateForRun(defaultPromptTemplateId)
+    )
+  }
+
+  const buildBenchmarkConfigsForRun = (workflowsForRun: EvaluationWorkflow[]): BenchmarkConfig[] => {
+    const rawTemplate = getPromptTemplateForRun(defaultPromptTemplateId)
+    const structuredTemplate = getStructuredPromptTemplateForRun()
+    const uniqueModelIds = Array.from(new Set(selectedModels.map((id) => id.trim()).filter(Boolean))).slice(0, 3)
+
+    const modelConfigs = uniqueModelIds.flatMap((modelId): BenchmarkConfig[] => {
+      const safeModelId = toSafeConfigId(modelId)
+      const configs: BenchmarkConfig[] = []
+
+      if (includeRawModelBaselines) {
+        configs.push({
+          configId: `model-raw-${safeModelId}`,
+          label: `Raw baseline: ${modelId}`,
+          configType: "model_only",
+          providerId: selectedProviderId,
+          modelId,
+          promptTemplateId: rawTemplate.id,
+          promptTemplateText: rawTemplate.text,
+          stepCount: 1,
+          toolAssisted: false,
+        })
+      }
+
+      if (includeStructuredPromptBaselines) {
+        configs.push({
+          configId: `model-structured-${safeModelId}`,
+          label: `Structured: ${modelId}`,
+          configType: "model_only",
+          providerId: selectedProviderId,
+          modelId,
+          promptTemplateId: structuredTemplate.id,
+          promptTemplateText: structuredTemplate.text,
+          stepCount: 1,
+          toolAssisted: false,
+        })
+      }
+
+      return configs
+    })
+
+    const workflowConfigs = includeEnabledWorkflows
+      ? workflowsForRun.map((workflow): BenchmarkConfig => ({
+          configId: `workflow-${toSafeConfigId(workflow.id)}`,
+          label: `Workflow: ${workflow.name}`,
+          configType: "workflow",
+          providerId: selectedProviderId,
+          workflowId: workflow.id,
+          workflow,
+          stepCount: workflow.steps.length,
+          toolAssisted: workflow.steps.some((step) => step.stepType === "deterministic_precheck"),
+        }))
+      : []
+
+    return [...modelConfigs, ...workflowConfigs]
+  }
+
   const runBenchmark = async () => {
     if (!hasMounted || benchmarkRunning) return
 
@@ -1220,7 +1330,7 @@ export default function EvaluationSetupPage() {
 
     try {
       const providerId = selectedProviderId
-      const selectedIdsForRun = selectedWorkflowIds
+      const selectedIdsForRun = includeEnabledWorkflows ? selectedWorkflowIds : []
       const workflowsForRun = hydrateWorkflowsForRun(
         evaluationWorkflows.filter((workflow) => selectedIdsForRun.includes(workflow.id)),
       )
@@ -1228,8 +1338,11 @@ export default function EvaluationSetupPage() {
       if (workflowValidationError) {
         throw new Error(workflowValidationError)
       }
-      const selectedModelIds = workflowsForRun.length > 0 ? [] : selectedModels
       const configsForRun = hydrateConfigsWithPromptTemplates(evaluationConfigs)
+      const benchmarkConfigs = buildBenchmarkConfigsForRun(workflowsForRun)
+      if (benchmarkConfigs.length === 0) {
+        throw new Error("Select at least one benchmark configuration: raw baselines, structured baselines, or workflows.")
+      }
       const workflowPromptTemplateIds = new Set(
         workflowsForRun.flatMap((workflow) =>
           workflow.steps
@@ -1237,12 +1350,12 @@ export default function EvaluationSetupPage() {
             .filter((id): id is string => typeof id === "string" && id.length > 0),
         ),
       )
-      if (workflowsForRun.length === 0) workflowPromptTemplateIds.add(defaultPromptTemplateId)
+      benchmarkConfigs.forEach((config) => {
+        if (config.promptTemplateId) workflowPromptTemplateIds.add(config.promptTemplateId)
+      })
       const promptTemplatesForRun = promptTemplates.filter((template) => workflowPromptTemplateIds.has(template.id))
       const defaultPromptTemplate =
-        promptTemplates.find((template) => template.id === defaultPromptTemplateId) ??
-        promptTemplates.find((template) => template.id === DEFAULT_MODEL_ONLY_PROMPT_TEMPLATE_ID) ??
-        DEFAULT_PROMPT_TEMPLATES[0]
+        getPromptTemplateForRun(defaultPromptTemplateId)
       const apiKey = providerApiKeys[providerId]?.key
       const delayNumber = Number(batchDelayMs)
       const retryNumber = Number(batchMaxRetries)
@@ -1261,9 +1374,10 @@ export default function EvaluationSetupPage() {
         body: JSON.stringify({
           providerId,
           apiKey,
-          selectedModelIds,
+          selectedModelIds: selectedModels,
           evaluationConfigs: configsForRun,
           evaluationWorkflows: workflowsForRun,
+          benchmarkConfigs,
           promptTemplates: promptTemplatesForRun,
           defaultPromptTemplateId: defaultPromptTemplate.id,
           defaultPromptTemplateText: defaultPromptTemplate.text,
@@ -1299,6 +1413,14 @@ export default function EvaluationSetupPage() {
   const summaryMaxRetries = Number.isFinite(summaryRetryNumber)
     ? Math.min(Math.max(0, Math.round(summaryRetryNumber)), 5)
     : 2
+  const enabledSummaryWorkflows = evaluationWorkflows.filter((workflow) => selectedWorkflowIds.includes(workflow.id))
+  const modelOnlyConfigCount =
+    selectedModels.length *
+    Number(includeRawModelBaselines) +
+    selectedModels.length *
+    Number(includeStructuredPromptBaselines)
+  const workflowConfigCount = includeEnabledWorkflows ? enabledSummaryWorkflows.length : 0
+  const totalBenchmarkConfigCount = modelOnlyConfigCount + workflowConfigCount
 
   if (!hasMounted) {
     return (
@@ -2349,8 +2471,41 @@ export default function EvaluationSetupPage() {
                       ))}
                     </select>
                     <p className="text-xs text-muted-foreground">
-                      Ignored when workflows are enabled. Workflow prompts are selected per step.
+                      Used for raw model baseline configs. Workflow prompts are selected per step.
                     </p>
+                  </div>
+
+                  <div className="space-y-3 rounded-lg border border-border p-3">
+                    <div>
+                      <p className="text-sm font-medium text-foreground">Benchmark configuration groups</p>
+                      <p className="text-xs text-muted-foreground">
+                        Include raw models and workflows together in the same benchmark run.
+                      </p>
+                    </div>
+                    <div className="flex items-center justify-between py-1">
+                      <div>
+                        <Label className="text-sm font-medium">Include raw model baselines</Label>
+                        <p className="text-xs text-muted-foreground">One baseline prompt run for each selected model.</p>
+                      </div>
+                      <Switch checked={includeRawModelBaselines} onCheckedChange={setIncludeRawModelBaselines} />
+                    </div>
+                    <div className="flex items-center justify-between py-1">
+                      <div>
+                        <Label className="text-sm font-medium">Include structured prompt baselines</Label>
+                        <p className="text-xs text-muted-foreground">One structured JSON prompt run for each selected model.</p>
+                      </div>
+                      <Switch
+                        checked={includeStructuredPromptBaselines}
+                        onCheckedChange={setIncludeStructuredPromptBaselines}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between py-1">
+                      <div>
+                        <Label className="text-sm font-medium">Include enabled workflows</Label>
+                        <p className="text-xs text-muted-foreground">Each enabled workflow becomes one benchmark config.</p>
+                      </div>
+                      <Switch checked={includeEnabledWorkflows} onCheckedChange={setIncludeEnabledWorkflows} />
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-4">
@@ -2459,7 +2614,7 @@ export default function EvaluationSetupPage() {
                         )
                       })
                     ) : (
-                      <span className="text-sm text-muted-foreground">Predefined fallback configs</span>
+                      <span className="text-sm text-muted-foreground">No model baselines selected</span>
                     )}
                   </div>
                 </div>
@@ -2470,33 +2625,36 @@ export default function EvaluationSetupPage() {
                       "Baseline PCT prompt"}
                   </Badge>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {selectedWorkflowIds.length > 0
-                      ? "Workflow prompts are selected per step."
-                      : "Model-only fallback uses selected models and this default prompt template."}
+                    Used by raw model baselines. Workflow prompts are selected per step.
                   </p>
                 </div>
                 <div>
-                  <p className="text-xs font-medium text-muted-foreground mb-2">Evaluation Configurations</p>
+                  <p className="text-xs font-medium text-muted-foreground mb-2">Benchmark Configurations</p>
                   <div className="flex flex-wrap gap-2">
-                    {selectedWorkflowIds.length > 0 ? (
-                      <Badge variant="secondary">Workflow-based evaluation</Badge>
-                    ) : evaluationConfigs.length > 0 ? (
-                      evaluationConfigs.map((config) => (
-                        <Badge key={config.configId} variant="outline">
-                          {config.label}: {config.workflowType}
-                        </Badge>
-                      ))
-                    ) : (
-                      <span className="text-sm text-muted-foreground">Model-only fallback</span>
-                    )}
+                    <Badge variant="secondary">Total configs: {totalBenchmarkConfigCount}</Badge>
+                    <Badge variant="outline">Model-only configs: {modelOnlyConfigCount}</Badge>
+                    <Badge variant="outline">Workflow configs: {workflowConfigCount}</Badge>
+                  </div>
+                  <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                    {selectedModels.length > 0 && includeRawModelBaselines
+                      ? selectedModels.map((modelId) => <p key={`raw-${modelId}`}>Raw: {modelId}</p>)
+                      : null}
+                    {selectedModels.length > 0 && includeStructuredPromptBaselines
+                      ? selectedModels.map((modelId) => <p key={`structured-${modelId}`}>Structured: {modelId}</p>)
+                      : null}
+                    {includeEnabledWorkflows
+                      ? enabledSummaryWorkflows.map((workflow) => (
+                          <p key={`workflow-${workflow.id}`}>Workflow: {workflow.name}</p>
+                        ))
+                      : null}
+                    {totalBenchmarkConfigCount === 0 ? <p>No benchmark configs selected</p> : null}
                   </div>
                 </div>
                 <div>
                   <p className="text-xs font-medium text-muted-foreground mb-2">Evaluation Workflows</p>
                   <div className="flex flex-wrap gap-2">
-                    {selectedWorkflowIds.length > 0 ? (
-                      evaluationWorkflows
-                        .filter((workflow) => selectedWorkflowIds.includes(workflow.id))
+                    {includeEnabledWorkflows && enabledSummaryWorkflows.length > 0 ? (
+                      enabledSummaryWorkflows
                         .map((workflow) => (
                           <div key={workflow.id} className="space-y-1">
                             <Badge variant="outline">
@@ -2561,7 +2719,7 @@ export default function EvaluationSetupPage() {
               ) : null}
 
               <p className="text-xs text-muted-foreground mt-3">
-                MVP note: backend uses selected model IDs when 1-3 custom models are selected; otherwise it falls back to predefined free OpenRouter model/prompt configurations.
+                MVP note: batch runs now evaluate the selected benchmark configurations together, including raw baselines, structured baselines, and enabled workflows.
               </p>
             </CardContent>
           </Card>

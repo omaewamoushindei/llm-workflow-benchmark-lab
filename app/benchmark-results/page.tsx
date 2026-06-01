@@ -52,6 +52,7 @@ type ModelAggregate = {
   configId: string
   modelLabel: string
   configLabel?: string
+  configType?: string
   workflowType?: string
   workflowName?: string
   workflowStepCount?: number
@@ -117,6 +118,7 @@ function getBatchModelAggregates(batchResponse: BatchEvaluationResponse): ModelA
       configId,
       modelLabel: modelResults[0]?.modelLabel ?? configId,
       configLabel: modelResults[0]?.configLabel,
+      configType: modelResults[0]?.configType,
       workflowType: modelResults[0]?.workflowType,
       workflowName: modelResults[0]?.workflowName,
       workflowStepCount: modelResults[0]?.workflowStepCount,
@@ -356,8 +358,13 @@ export default function BenchmarkResultsPage() {
                           <td className="py-3 pr-4">
                             <p className="font-medium text-foreground">{model.configLabel ?? model.modelLabel}</p>
                             <p className="text-xs text-muted-foreground">{model.configId}</p>
+                            {model.configType ? (
+                              <Badge variant="secondary" className="mt-1 text-xs">
+                                {model.configType === "workflow" ? "Workflow" : "Model-only"}
+                              </Badge>
+                            ) : null}
                             {model.workflowType ? (
-                              <Badge variant="outline" className="mt-1 text-xs">
+                              <Badge variant="outline" className="mt-1 ml-1 text-xs">
                                 {model.workflowType}
                               </Badge>
                             ) : null}
@@ -414,6 +421,7 @@ export default function BenchmarkResultsPage() {
                                 <div>
                                   <p className="font-medium text-foreground">{result.configLabel ?? result.modelLabel}</p>
                                   <p className="text-xs text-muted-foreground">
+                                    {result.configType ? `${result.configType === "workflow" ? "Workflow" : "Model-only"} | ` : ""}
                                     {result.workflowName ? `${result.workflowName} | ` : ""}
                                     {result.workflowType ? `${result.workflowType} | ` : ""}{result.promptStrategy}
                                     {result.workflowStepCount ? ` | ${result.workflowStepCount} steps` : ""}
@@ -590,18 +598,19 @@ export default function BenchmarkResultsPage() {
               const isSafe = !isError && safetyWarnings.length === 0
 
               return (
-              <Card key={result.configId} className={isHighAlignment ? "ring-2 ring-success/30" : ""}>
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <CardTitle className="text-base">{result.configLabel ?? result.modelLabel}</CardTitle>
-                      <CardDescription>
-                        {result.workflowName ? `${result.workflowName} | ` : ""}
-                        {result.workflowType ? `${result.workflowType} | ` : ""}{result.promptStrategy}
-                        {result.workflowStepCount ? ` | ${result.workflowStepCount} steps` : ""}
-                      </CardDescription>
-                    </div>
-                    <div className="flex items-center gap-2">
+                <Card key={result.configId} className={isHighAlignment ? "ring-2 ring-success/30" : ""}>
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <CardTitle className="text-base">{result.configLabel ?? result.modelLabel}</CardTitle>
+                        <CardDescription>
+                          {result.configType ? `${result.configType === "workflow" ? "Workflow" : "Model-only"} | ` : ""}
+                          {result.workflowName ? `${result.workflowName} | ` : ""}
+                          {result.workflowType ? `${result.workflowType} | ` : ""}{result.promptStrategy}
+                          {result.workflowStepCount ? ` | ${result.workflowStepCount} steps` : ""}
+                        </CardDescription>
+                      </div>
+                      <div className="flex items-center gap-2">
                       <Badge variant="outline" className="text-xs h-5">
                         {result.status}
                       </Badge>

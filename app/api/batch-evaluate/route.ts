@@ -8,6 +8,7 @@ import { deriveReferenceChecks, evaluateReferenceDecision } from '@/lib/pct-refe
 import { buildEvaluationPrompt } from '@/lib/prompt-builder'
 import { normalizeLlmParsedOutput, scoreLlmOutput } from '@/lib/scoring'
 import type {
+  BenchmarkConfig,
   ClinicalCase,
   EvaluationWorkflow,
   LlmEvaluationResult,
@@ -25,6 +26,7 @@ type PromptStrategy = 'Baseline Prompt' | 'Structured Prompt' | 'Verification Pr
 type ProviderEvaluationConfig = {
   configId: string
   label: string
+  configType?: 'model_only' | 'workflow'
   providerId: LlmProviderId
   workflowType: WorkflowType
   modelLabel: string
@@ -33,13 +35,17 @@ type ProviderEvaluationConfig = {
   promptStrategy: PromptStrategyId
   promptTemplateId?: string
   promptTemplateText?: string
+  workflowId?: string
   workflow?: EvaluationWorkflow
+  stepCount?: number
+  toolAssisted?: boolean
 }
 
 type BatchEvaluateRequest = {
   providerId: LlmProviderId
   apiKey: string | null
   selectedModelIds: string[]
+  benchmarkConfigs: ProviderEvaluationConfig[]
   evaluationConfigs: ProviderEvaluationConfig[]
   evaluationWorkflows: EvaluationWorkflow[]
   promptTemplates: PromptTemplate[]
@@ -188,6 +194,7 @@ function parseEvaluationConfigs(value: unknown, fallbackProviderId: LlmProviderI
       return {
         configId: configId.replace(/[^a-zA-Z0-9._-]/g, '-'),
         label,
+        configType: 'model_only',
         providerId,
         workflowType,
         modelLabel: label,
@@ -199,6 +206,16 @@ function parseEvaluationConfigs(value: unknown, fallbackProviderId: LlmProviderI
     })
     .filter((config): config is ProviderEvaluationConfig => config !== null)
     .slice(0, 5)
+}
+
+function getPromptStrategyForTemplateId(templateId: unknown, fallback: PromptStrategyId = 'baseline'): PromptStrategyId {
+  if (typeof templateId !== 'string') return fallback
+  const lower = templateId.toLowerCase()
+  if (lower.includes('verification') || lower.includes('a4-final')) return 'verification'
+  if (lower.includes('structured') || lower.includes('json') || lower.includes('a2-') || lower.includes('a3-')) {
+    return 'structured'
+  }
+  return fallback
 }
 
 function parseWorkflowStep(value: unknown): WorkflowStep | null {
@@ -323,12 +340,83 @@ function hydrateWorkflowPromptTemplates(
   }))
 }
 
+function parseBenchmarkConfigs(value: unknown, fallbackProviderId: LlmProviderId): ProviderEvaluationConfig[] {
+  if (!Array.isArray(value)) return []
+
+  return value
+    .filter(isRecord)
+    .map((rawConfig, index): ProviderEvaluationConfig | null => {
+      const candidate = rawConfig as Partial<BenchmarkConfig>
+      const providerId = candidate.providerId === 'groq' ? 'groq' : fallbackProviderId
+      const configId =
+        typeof candidate.configId === 'string' && candidate.configId.trim()
+          ? candidate.configId.trim().replace(/[^a-zA-Z0-9._-]/g, '-')
+          : `benchmark-config-${index + 1}`
+      const label =
+        typeof candidate.label === 'string' && candidate.label.trim()
+          ? candidate.label.trim()
+          : `Benchmark config ${index + 1}`
+
+      if (candidate.configType === 'workflow') {
+        const [workflow] = parseEvaluationWorkflows(candidate.workflow ? [candidate.workflow] : [])
+        if (!workflow) return null
+        const hydratedWorkflow = hydrateWorkflowPromptTemplates([workflow], [])[0] ?? workflow
+        const modelIds = getModelIdsForWorkflow(hydratedWorkflow)
+        const workflowType = getWorkflowTypeForWorkflow(hydratedWorkflow)
+
+        return {
+          configId,
+          label,
+          configType: 'workflow',
+          providerId,
+          workflowType,
+          modelLabel: modelIds.join(' + ') || hydratedWorkflow.name,
+          modelIds,
+          promptStrategy: getPromptStrategyForWorkflow(workflowType, 'structured'),
+          workflowId: typeof candidate.workflowId === 'string' ? candidate.workflowId : hydratedWorkflow.id,
+          workflow: hydratedWorkflow,
+          stepCount:
+            typeof candidate.stepCount === 'number' && Number.isFinite(candidate.stepCount)
+              ? Math.max(0, Math.round(candidate.stepCount))
+              : hydratedWorkflow.steps.length,
+          toolAssisted: candidate.toolAssisted === true || isToolAssistedWorkflow(hydratedWorkflow),
+        }
+      }
+
+      const modelId = typeof candidate.modelId === 'string' && candidate.modelId.trim() ? candidate.modelId.trim() : ''
+      if (!modelId) return null
+      const promptStrategy = getPromptStrategyForTemplateId(candidate.promptTemplateId)
+
+      return {
+        configId,
+        label,
+        configType: 'model_only',
+        providerId,
+        workflowType: promptStrategy === 'structured' ? 'structured_prompt' : promptStrategy === 'verification' ? 'verification' : 'raw_baseline',
+        modelLabel: modelId,
+        modelId,
+        modelIds: [modelId],
+        promptStrategy,
+        promptTemplateId: typeof candidate.promptTemplateId === 'string' ? candidate.promptTemplateId : undefined,
+        promptTemplateText: typeof candidate.promptTemplateText === 'string' ? candidate.promptTemplateText : undefined,
+        stepCount:
+          typeof candidate.stepCount === 'number' && Number.isFinite(candidate.stepCount)
+            ? Math.max(0, Math.round(candidate.stepCount))
+            : 1,
+        toolAssisted: false,
+      }
+    })
+    .filter((config): config is ProviderEvaluationConfig => config !== null)
+    .slice(0, 25)
+}
+
 function parseRequestBody(body: unknown): BatchEvaluateRequest {
   if (!isRecord(body)) {
     return {
       providerId: 'openrouter',
       apiKey: null,
       selectedModelIds: [],
+      benchmarkConfigs: [],
       evaluationConfigs: [],
       evaluationWorkflows: [],
       promptTemplates: [],
@@ -347,6 +435,7 @@ function parseRequestBody(body: unknown): BatchEvaluateRequest {
     selectedModelIds: Array.isArray(body.selectedModelIds)
       ? body.selectedModelIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
       : [],
+    benchmarkConfigs: parseBenchmarkConfigs(body.benchmarkConfigs, body.providerId === 'groq' ? 'groq' : 'openrouter'),
     evaluationConfigs: parseEvaluationConfigs(body.evaluationConfigs, body.providerId === 'groq' ? 'groq' : 'openrouter'),
     evaluationWorkflows: parseEvaluationWorkflows(body.evaluationWorkflows),
     promptTemplates: parsePromptTemplates(body.promptTemplates),
@@ -502,6 +591,7 @@ function buildProviderConfigs(
   if (uniqueModelIds.length === 0) {
     return getFallbackProviderConfigs(providerId).map((config) => ({
       ...config,
+      configType: 'model_only',
       promptTemplateId: defaultPromptTemplateId ?? config.promptTemplateId,
       promptTemplateText: defaultPromptTemplateText ?? config.promptTemplateText,
     }))
@@ -510,6 +600,7 @@ function buildProviderConfigs(
   return uniqueModelIds.map((modelId, index) => ({
     configId: `${modelId}_${PROMPT_STRATEGIES[index]}`.replace(/[^a-zA-Z0-9._-]/g, '-'),
     label: `${modelId} ${PROMPT_STRATEGIES[index]}`,
+    configType: 'model_only',
     providerId,
     workflowType:
       PROMPT_STRATEGIES[index] === 'baseline'
@@ -568,12 +659,16 @@ function buildWorkflowConfigs(providerId: LlmProviderId, workflows: EvaluationWo
     return {
       configId: workflow.id,
       label: workflow.name,
+      configType: 'workflow',
       providerId,
       workflowType,
       modelLabel: modelIds.join(' + ') || workflow.name,
       modelIds,
       promptStrategy: getPromptStrategyForWorkflow(workflowType, 'structured'),
       workflow,
+      workflowId: workflow.id,
+      stepCount: workflow.steps.length,
+      toolAssisted: isToolAssistedWorkflow(workflow),
     }
   })
 }
@@ -640,10 +735,11 @@ function buildMockResult(
     configId: config.configId,
     modelLabel: config.modelLabel,
     configLabel: config.label,
+    configType: config.configType,
     workflowType: config.workflowType,
     workflowName: config.workflow?.name,
-    workflowStepCount: config.workflow?.steps.length,
-    toolAssisted: isToolAssistedConfig(config),
+    workflowStepCount: config.stepCount ?? config.workflow?.steps.length,
+    toolAssisted: config.toolAssisted ?? isToolAssistedConfig(config),
     promptStrategy: getPromptStrategyLabel(config.promptStrategy),
     status: 'success',
     parsedOutput,
@@ -821,10 +917,11 @@ async function buildLiveResult(args: {
       configId: config.configId,
       modelLabel: config.modelLabel,
       configLabel: config.label,
+      configType: config.configType,
       workflowType: config.workflowType,
       workflowName: config.workflow?.name,
-      workflowStepCount: config.workflow?.steps.length,
-      toolAssisted: isToolAssistedConfig(config),
+      workflowStepCount: config.stepCount ?? config.workflow?.steps.length,
+      toolAssisted: config.toolAssisted ?? isToolAssistedConfig(config),
       promptStrategy,
       status: 'error',
       error: 'No API key connected for selected provider.',
@@ -895,10 +992,11 @@ async function buildLiveResult(args: {
       configId: config.configId,
       modelLabel: config.modelLabel,
       configLabel: config.label,
+      configType: config.configType,
       workflowType: config.workflowType,
       workflowName: config.workflow?.name,
-      workflowStepCount: config.workflow?.steps.length,
-      toolAssisted: isToolAssistedConfig(config),
+      workflowStepCount: config.stepCount ?? config.workflow?.steps.length,
+      toolAssisted: config.toolAssisted ?? isToolAssistedConfig(config),
       promptStrategy,
       status: 'error',
       rawOutput: finalRawOutput,
@@ -914,10 +1012,11 @@ async function buildLiveResult(args: {
       configId: config.configId,
       modelLabel: config.modelLabel,
       configLabel: config.label,
+      configType: config.configType,
       workflowType: config.workflowType,
       workflowName: config.workflow?.name,
-      workflowStepCount: config.workflow?.steps.length,
-      toolAssisted: isToolAssistedConfig(config),
+      workflowStepCount: config.stepCount ?? config.workflow?.steps.length,
+      toolAssisted: config.toolAssisted ?? isToolAssistedConfig(config),
       promptStrategy,
       status: 'error',
       rawOutput: finalRawOutput,
@@ -931,13 +1030,14 @@ async function buildLiveResult(args: {
     configId: config.configId,
     modelLabel: config.modelLabel,
     configLabel: config.label,
+    configType: config.configType,
     workflowType: config.workflowType,
     promptStrategy,
     status: 'success',
     parsedOutput,
     workflowName: config.workflow?.name,
-    workflowStepCount: config.workflow?.steps.length,
-    toolAssisted: isToolAssistedConfig(config),
+    workflowStepCount: config.stepCount ?? config.workflow?.steps.length,
+    toolAssisted: config.toolAssisted ?? isToolAssistedConfig(config),
     rawOutput: workflowExecution?.rawOutput ?? (config.workflowType === 'verification'
       ? JSON.stringify({ primaryOutput: rawOutput, verifierOutput: finalRawOutput }, null, 2)
       : finalRawOutput),
@@ -989,10 +1089,11 @@ async function evaluateCase(args: {
         configId: config.configId,
         modelLabel: config.modelLabel,
         configLabel: config.label,
+        configType: config.configType,
         workflowType: config.workflowType,
         workflowName: config.workflow?.name,
-        workflowStepCount: config.workflow?.steps.length,
-        toolAssisted: isToolAssistedConfig(config),
+        workflowStepCount: config.stepCount ?? config.workflow?.steps.length,
+        toolAssisted: config.toolAssisted ?? isToolAssistedConfig(config),
         promptStrategy: getPromptStrategyLabel(config.promptStrategy),
         status: 'error',
         error: getReadableModelError(error, failureReason),
@@ -1054,7 +1155,9 @@ export async function POST(request: Request) {
       : benchmarkCases
 
   const configs =
-    input.evaluationWorkflows.length > 0
+    input.benchmarkConfigs.length > 0
+      ? input.benchmarkConfigs
+    : input.evaluationWorkflows.length > 0
       ? buildWorkflowConfigs(
           input.providerId,
           hydrateWorkflowPromptTemplates(input.evaluationWorkflows, input.promptTemplates),
