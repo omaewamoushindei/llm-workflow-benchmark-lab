@@ -3,101 +3,163 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { CheckCircle2, AlertTriangle, Circle, FileText, Activity } from "lucide-react"
 import { cn } from "@/lib/utils"
-
-interface CaseData {
-  patientAge: string
-  sex: string
-  symptoms: string
-  infectionType: string
-  antibioticStatus: string
-  pctValue: string
-  wbcCount: string
-  crpValue: string
-  clinicalNotes: string
-  caseDescription: string
-}
+import type { ClinicalCase } from "@/lib/types"
+import { calculatePctDeclinePercent, getPctThreshold } from "@/lib/pct-reference"
 
 interface SummaryPanelProps {
-  caseData: CaseData
+  caseData: ClinicalCase
 }
 
 interface FieldStatus {
   label: string
   filled: boolean
-  required: boolean
+}
+
+function formatNullableBoolean(value: boolean | null): string {
+  if (value === true) return "Yes"
+  if (value === false) return "No"
+  return "Unknown"
+}
+
+function formatThreshold(value: number | null): string {
+  return value === null ? "unknown" : `${value} ng/mL`
+}
+
+function formatPct(value: number | null): string {
+  return value === null ? "not provided" : `${value} ng/mL`
+}
+
+function formatPctDecline(value: number | null): string {
+  return value === null ? "Unknown" : `${value.toFixed(1)}%`
+}
+
+function getInfectionContextLabel(context: ClinicalCase["infectionContext"]): string {
+  switch (context) {
+    case "lrti_non_icu":
+      return "LRTI/non-ICU"
+    case "sepsis_icu":
+      return "sepsis/ICU"
+    case "other_or_unclear":
+      return "other/unclear infection"
+    default: {
+      const _exhaustive: never = context
+      return _exhaustive
+    }
+  }
+}
+
+function getBenchmarkImplication(args: {
+  clinicalImprovement: ClinicalCase["clinicalImprovement"]
+  exclusionCondition: ClinicalCase["exclusionCondition"]
+  absoluteThresholdMet: boolean | null
+  pctDeclineCriterionMet: boolean | null
+  threshold: number | null
+}): string {
+  const {
+    clinicalImprovement,
+    exclusionCondition,
+    absoluteThresholdMet,
+    pctDeclineCriterionMet,
+    threshold,
+  } = args
+
+  if (exclusionCondition !== "none") {
+    return "an exclusion/caution condition is present, so clinical review is required by the benchmark reference logic."
+  }
+
+  if (clinicalImprovement === "no") {
+    return "clinical improvement is absent, so discontinuation should not be supported by the reference logic."
+  }
+
+  if (clinicalImprovement === "unclear") {
+    return "clinical improvement is unclear, so the reference logic treats discontinuation support as insufficiently established."
+  }
+
+  if (threshold === null) {
+    return "the infection context has no benchmark threshold, so discontinuation support is limited by missing threshold logic."
+  }
+
+  if (absoluteThresholdMet || pctDeclineCriterionMet) {
+    return "clinical improvement is present and at least one PCT criterion is met, so discontinuation may be considered by the reference logic."
+  }
+
+  return "clinical improvement is present, but neither PCT discontinuation criterion is met, so discontinuation should not be supported by the reference logic."
 }
 
 export function SummaryPanel({ caseData }: SummaryPanelProps) {
-  const fields: FieldStatus[] = [
-    { label: "Patient Age", filled: !!caseData.patientAge, required: true },
-    { label: "Sex", filled: !!caseData.sex, required: true },
-    { label: "Symptoms", filled: !!caseData.symptoms, required: true },
-    { label: "Infection Type", filled: !!caseData.infectionType, required: true },
-    { label: "Antibiotic Status", filled: !!caseData.antibioticStatus, required: true },
-    { label: "PCT Value", filled: !!caseData.pctValue, required: true },
-    { label: "WBC Count", filled: !!caseData.wbcCount, required: false },
-    { label: "CRP", filled: !!caseData.crpValue, required: false },
-    { label: "Clinical Notes", filled: !!caseData.clinicalNotes, required: false },
-    { label: "Case Description", filled: !!caseData.caseDescription, required: false },
+  const benchmarkFields: FieldStatus[] = [
+    { label: "Infection Context", filled: !!caseData.infectionContext },
+    { label: "Clinical Improvement", filled: !!caseData.clinicalImprovement },
+    { label: "Peak PCT", filled: caseData.peakPct !== null },
+    { label: "Current PCT", filled: caseData.currentPct !== null },
+    { label: "Exclusion / Caution Condition", filled: !!caseData.exclusionCondition },
   ]
 
-  const requiredFields = fields.filter(f => f.required)
-  const filledRequired = requiredFields.filter(f => f.filled).length
-  const totalRequired = requiredFields.length
-  const completionPercent = Math.round((filledRequired / totalRequired) * 100)
+  const clinicalContextFields: FieldStatus[] = [
+    { label: "Patient Age", filled: caseData.patientAge !== null },
+    { label: "Sex", filled: !!caseData.sex },
+    { label: "Symptoms", filled: !!caseData.symptoms },
+    { label: "Current Antibiotic Status", filled: !!caseData.currentAntibioticStatus },
+    { label: "Antibiotics Duration Days", filled: caseData.antibioticsDurationDays !== null },
+    { label: "WBC", filled: caseData.wbc !== null },
+    { label: "CRP", filled: caseData.crp !== null },
+    { label: "Clinical Notes", filled: !!caseData.clinicalNotes },
+    { label: "Case Description", filled: !!caseData.caseDescription },
+  ]
 
-  const missingRequired = requiredFields.filter(f => !f.filled)
-  const isComplete = missingRequired.length === 0
+  const filledBenchmarkFields = benchmarkFields.filter((field) => field.filled).length
+  const filledClinicalContextFields = clinicalContextFields.filter((field) => field.filled).length
+  const completionPercent = Math.round((filledBenchmarkFields / benchmarkFields.length) * 100)
+  const missingBenchmarkFields = benchmarkFields.filter((field) => !field.filled)
+  const isBenchmarkComplete = missingBenchmarkFields.length === 0
 
-  // Generate clinical context summary
-  const getContextSummary = () => {
-    const parts: string[] = []
-    
-    if (caseData.patientAge && caseData.sex) {
-      parts.push(`${caseData.patientAge}-year-old ${caseData.sex}`)
-    }
-    
-    if (caseData.infectionType) {
-      const types: Record<string, string> = {
-        respiratory: "suspected respiratory infection",
-        urinary: "suspected urinary tract infection",
-        skin: "suspected skin/soft tissue infection",
-        abdominal: "suspected abdominal infection",
-        bloodstream: "suspected bloodstream infection",
-        unknown: "infection of unknown origin",
-      }
-      parts.push(types[caseData.infectionType] || caseData.infectionType)
-    }
-    
-    if (caseData.pctValue) {
-      const pct = parseFloat(caseData.pctValue)
-      let pctInterpretation = ""
-      if (pct < 0.1) pctInterpretation = "PCT suggests low bacterial infection risk"
-      else if (pct < 0.25) pctInterpretation = "PCT in gray zone"
-      else if (pct < 0.5) pctInterpretation = "PCT suggests possible bacterial infection"
-      else pctInterpretation = "PCT suggests likely bacterial infection"
-      parts.push(pctInterpretation)
-    }
+  const threshold = getPctThreshold(caseData.infectionContext)
+  const pctDeclinePercent = calculatePctDeclinePercent(caseData.peakPct, caseData.currentPct)
+  const absoluteThresholdMet =
+    caseData.currentPct !== null && threshold !== null ? caseData.currentPct <= threshold : null
+  const pctDeclineCriterionMet = pctDeclinePercent !== null ? pctDeclinePercent > 80 : null
+  const contextLabel = getInfectionContextLabel(caseData.infectionContext)
+  const thresholdComparison =
+    caseData.currentPct === null || threshold === null
+      ? "cannot be compared with a benchmark threshold"
+      : absoluteThresholdMet
+        ? `at or below the ${threshold} ng/mL threshold`
+        : `above the ${threshold} ng/mL threshold`
+  const pctDeclineText =
+    pctDeclinePercent === null ? "PCT decline is unknown" : `PCT decline is ${pctDeclinePercent.toFixed(1)}%`
+  const ageSex =
+    caseData.patientAge !== null && caseData.sex
+      ? `${caseData.patientAge}-year-old ${caseData.sex}`
+      : "Patient"
+  const exclusionText =
+    caseData.exclusionCondition === "none"
+      ? "no exclusion/caution condition is selected"
+      : `exclusion/caution status is ${caseData.exclusionCondition}`
+  const benchmarkImplication = getBenchmarkImplication({
+    clinicalImprovement: caseData.clinicalImprovement,
+    exclusionCondition: caseData.exclusionCondition,
+    absoluteThresholdMet,
+    pctDeclineCriterionMet,
+    threshold,
+  })
+  const contextSummary = `${ageSex}, ${contextLabel} context. Current PCT is ${formatPct(caseData.currentPct)}, ${thresholdComparison}, while ${pctDeclineText}. Clinical improvement is ${caseData.clinicalImprovement}, and ${exclusionText}; ${benchmarkImplication}`
 
-    return parts.length > 0 ? parts.join(". ") + "." : "No clinical context available yet."
-  }
-
-  // PCT interpretation
-  const getPCTInterpretation = () => {
-    if (!caseData.pctValue) return null
-    const pct = parseFloat(caseData.pctValue)
-    
-    if (pct < 0.1) return { level: "Very Low", color: "text-success", recommendation: "Antibiotic initiation strongly discouraged" }
-    if (pct < 0.25) return { level: "Low", color: "text-success", recommendation: "Antibiotic initiation discouraged" }
-    if (pct < 0.5) return { level: "Moderate", color: "text-warning", recommendation: "Antibiotic initiation encouraged" }
-    return { level: "High", color: "text-destructive", recommendation: "Antibiotic initiation strongly encouraged" }
-  }
-
-  const pctInterpretation = getPCTInterpretation()
+  const renderFieldStatus = (field: FieldStatus, required: boolean) => (
+    <div key={field.label} className="flex items-center gap-2 text-sm">
+      {field.filled ? (
+        <CheckCircle2 className="w-4 h-4 text-success shrink-0" />
+      ) : (
+        <Circle className={cn("w-4 h-4 shrink-0", required ? "text-muted-foreground" : "text-muted-foreground/50")} />
+      )}
+      <span className={cn(field.filled ? "text-foreground" : "text-muted-foreground", !required && "text-muted-foreground")}>
+        {field.label}
+        {required && <span className="text-destructive ml-0.5">*</span>}
+      </span>
+    </div>
+  )
 
   return (
     <div className="space-y-4">
-      {/* Completeness Card */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
@@ -106,62 +168,61 @@ export function SummaryPanel({ caseData }: SummaryPanelProps) {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Progress Bar */}
           <div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-sm text-muted-foreground">Benchmark inputs</span>
+              <span className={cn("text-sm font-medium", isBenchmarkComplete ? "text-success" : "text-foreground")}>
+                {filledBenchmarkFields}/{benchmarkFields.length}
+              </span>
+            </div>
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-muted-foreground">Required fields</span>
-              <span className={cn(
-                "text-sm font-medium",
-                isComplete ? "text-success" : "text-foreground"
-              )}>
-                {filledRequired}/{totalRequired}
+              <span className="text-xs text-muted-foreground">Clinical context fields</span>
+              <span className="text-xs font-medium text-muted-foreground">
+                {filledClinicalContextFields}/{clinicalContextFields.length}
               </span>
             </div>
             <div className="h-2 bg-muted rounded-full overflow-hidden">
               <div
                 className={cn(
                   "h-full transition-all duration-300 rounded-full",
-                  isComplete ? "bg-success" : "bg-primary"
+                  isBenchmarkComplete ? "bg-success" : "bg-primary",
                 )}
                 style={{ width: `${completionPercent}%` }}
               />
             </div>
           </div>
 
-          {/* Field Status List */}
-          <div className="space-y-1.5">
-            {fields.map((field) => (
-              <div key={field.label} className="flex items-center gap-2 text-sm">
-                {field.filled ? (
-                  <CheckCircle2 className="w-4 h-4 text-success flex-shrink-0" />
-                ) : field.required ? (
-                  <Circle className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-                ) : (
-                  <Circle className="w-4 h-4 text-muted-foreground/50 flex-shrink-0" />
-                )}
-                <span className={cn(
-                  field.filled ? "text-foreground" : "text-muted-foreground",
-                  !field.required && "text-muted-foreground"
-                )}>
-                  {field.label}
-                  {field.required && <span className="text-destructive ml-0.5">*</span>}
-                </span>
+          <div className="space-y-2">
+            <div>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1.5">
+                Benchmark-required fields
+              </p>
+              <div className="space-y-1.5">
+                {benchmarkFields.map((field) => renderFieldStatus(field, true))}
               </div>
-            ))}
+            </div>
+
+            <div>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1.5">
+                Clinical-context fields
+              </p>
+              <div className="space-y-1.5">
+                {clinicalContextFields.map((field) => renderFieldStatus(field, false))}
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* Missing Fields Warning */}
-      {missingRequired.length > 0 && (
+      {missingBenchmarkFields.length > 0 && (
         <Card className="border-warning/50 bg-warning/5">
           <CardContent className="pt-4">
             <div className="flex gap-3">
-              <AlertTriangle className="w-5 h-5 text-warning flex-shrink-0 mt-0.5" />
+              <AlertTriangle className="w-5 h-5 text-warning shrink-0 mt-0.5" />
               <div>
-                <p className="text-sm font-medium text-warning-foreground">Missing Required Fields</p>
+                <p className="text-sm font-medium text-warning-foreground">Missing Benchmark Inputs</p>
                 <p className="text-sm text-muted-foreground mt-1">
-                  {missingRequired.map(f => f.label).join(", ")}
+                  {missingBenchmarkFields.map((field) => field.label).join(", ")}
                 </p>
               </div>
             </div>
@@ -169,29 +230,36 @@ export function SummaryPanel({ caseData }: SummaryPanelProps) {
         </Card>
       )}
 
-      {/* PCT Interpretation */}
-      {pctInterpretation && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium">PCT Interpretation</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-muted-foreground">Level</span>
-                <span className={cn("text-sm font-medium", pctInterpretation.color)}>
-                  {pctInterpretation.level} ({caseData.pctValue} ng/mL)
-                </span>
-              </div>
-              <p className="text-sm text-muted-foreground">
-                {pctInterpretation.recommendation}
-              </p>
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-medium">Current PCT Interpretation</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm text-muted-foreground">Threshold</span>
+              <span className="text-sm font-medium text-foreground">{formatThreshold(threshold)}</span>
             </div>
-          </CardContent>
-        </Card>
-      )}
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm text-muted-foreground">Current PCT</span>
+              <span className="text-sm font-medium text-foreground">{formatPct(caseData.currentPct)}</span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm text-muted-foreground">Absolute threshold met</span>
+              <span className="text-sm font-medium text-foreground">{formatNullableBoolean(absoluteThresholdMet)}</span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm text-muted-foreground">PCT decline from peak</span>
+              <span className="text-sm font-medium text-foreground">{formatPctDecline(pctDeclinePercent)}</span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm text-muted-foreground">PCT decline criterion met</span>
+              <span className="text-sm font-medium text-foreground">{formatNullableBoolean(pctDeclineCriterionMet)}</span>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
-      {/* Clinical Context Summary */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
@@ -201,12 +269,11 @@ export function SummaryPanel({ caseData }: SummaryPanelProps) {
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground leading-relaxed">
-            {getContextSummary()}
+            {contextSummary}
           </p>
         </CardContent>
       </Card>
 
-      {/* Disclaimer */}
       <p className="text-xs text-muted-foreground text-center px-2">
         This tool is for research and educational purposes. Always consult clinical guidelines and institutional protocols.
       </p>

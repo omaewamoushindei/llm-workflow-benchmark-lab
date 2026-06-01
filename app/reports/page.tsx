@@ -1,164 +1,253 @@
 "use client"
 
-import { Sidebar } from "@/components/dashboard/sidebar"
+import { useEffect, useMemo, useState } from "react"
+
 import { Header } from "@/components/dashboard/header"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
+import { Sidebar } from "@/components/dashboard/sidebar"
 import { Badge } from "@/components/ui/badge"
-import { 
-  FileText, 
-  Download, 
-  Save, 
-  CheckCircle2, 
-  AlertTriangle, 
-  XCircle,
-  TrendingUp,
-  Shield,
-  Brain,
-  Activity,
-  Award,
-  ThumbsUp,
-  ThumbsDown,
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import type { EvaluationResponse, LlmEvaluationResult } from "@/lib/types"
+import {
   AlertOctagon,
-  Sparkles
+  AlertTriangle,
+  Award,
+  Brain,
+  CheckCircle2,
+  Download,
+  FileText,
+  Info,
+  Save,
+  Shield,
+  Sparkles,
+  Target,
+  TrendingUp,
+  XCircle,
 } from "lucide-react"
 
-const configurations = [
-  {
-    rank: 1,
-    name: "GPT-4 + Verification Workflow",
-    model: "GPT-4",
-    prompt: "Verification Workflow",
-    overall: 91.2,
-    guideline: 94.5,
-    safety: 96.0,
-    explainability: 88.3,
-    robustness: 86.0,
-    recommendation: "Highly Recommended",
-    badge: "success"
-  },
-  {
-    rank: 2,
-    name: "Claude + Structured Output",
-    model: "Claude 3.5",
-    prompt: "Structured Output",
-    overall: 87.8,
-    guideline: 89.2,
-    safety: 92.5,
-    explainability: 86.7,
-    robustness: 82.8,
-    recommendation: "Recommended",
-    badge: "success"
-  },
-  {
-    rank: 3,
-    name: "GPT-4 + Baseline Prompt",
-    model: "GPT-4",
-    prompt: "Baseline",
-    overall: 78.4,
-    guideline: 82.1,
-    safety: 84.0,
-    explainability: 75.2,
-    robustness: 72.3,
-    recommendation: "Acceptable",
-    badge: "warning"
-  },
-  {
-    rank: 4,
-    name: "Llama 3 + Chain-of-Thought",
-    model: "Llama 3",
-    prompt: "Chain-of-Thought",
-    overall: 68.9,
-    guideline: 71.5,
-    safety: 72.0,
-    explainability: 68.4,
-    robustness: 63.7,
-    recommendation: "Not Recommended",
-    badge: "destructive"
+type BatchEvaluationResponse = {
+  batchId: string
+  createdAt: string
+  providerId: "openrouter" | "groq"
+  caseCount: number
+  modelCount: number
+  cases: Array<{
+    caseId: string
+    title: string
+    sourceType: "thermo_case_adapted" | "synthetic_algorithm_case"
+    tags: string[]
+    expectedReferenceLabel: EvaluationResponse["referenceDecision"]["recommendation"]
+    caseData: EvaluationResponse["caseData"]
+    referenceDecision: EvaluationResponse["referenceDecision"]
+    referenceChecks: NonNullable<EvaluationResponse["referenceChecks"]>
+    results: LlmEvaluationResult[]
+  }>
+  aggregate: {
+    averageRecommendationMatch: number | null
+    averageCriterionAlignment: number | null
+    averageSafety: number | null
+    averageExplainability: number | null
+    totalSafetyWarnings: number
+    failedModelCalls: number
   }
+}
+
+type ModelRanking = {
+  configId: string
+  modelLabel: string
+  configLabel?: string
+  workflowType?: string
+  workflowName?: string
+  workflowStepCount?: number
+  toolAssisted?: boolean
+  averageRecommendationMatch: number | null
+  averageCriterionAlignment: number | null
+  averageSafety: number | null
+  averageExplainability: number | null
+  weightedScore: number
+  failedCalls: number
+  casesEvaluated: number
+}
+
+type WeakCase = {
+  caseId: string
+  title: string
+  expectedReferenceLabel: string
+  averageCriterionAlignment: number | null
+  failedCalls: number
+}
+
+const mockRankings: ModelRanking[] = [
+  {
+    configId: "mock-gpt-verification",
+    modelLabel: "GPT-4 + Verification Workflow",
+    averageRecommendationMatch: 94.5,
+    averageCriterionAlignment: 91.2,
+    averageSafety: 96,
+    averageExplainability: 88.3,
+    weightedScore: 92.8,
+    failedCalls: 0,
+    casesEvaluated: 48,
+  },
+  {
+    configId: "mock-claude-structured",
+    modelLabel: "Claude + Structured Output",
+    averageRecommendationMatch: 89.2,
+    averageCriterionAlignment: 87.8,
+    averageSafety: 92.5,
+    averageExplainability: 86.7,
+    weightedScore: 89.2,
+    failedCalls: 1,
+    casesEvaluated: 48,
+  },
+  {
+    configId: "mock-llama-baseline",
+    modelLabel: "Llama 3 + Baseline",
+    averageRecommendationMatch: 71.5,
+    averageCriterionAlignment: 68.9,
+    averageSafety: 72,
+    averageExplainability: 68.4,
+    weightedScore: 70.4,
+    failedCalls: 3,
+    casesEvaluated: 48,
+  },
 ]
 
-const modelAnalysis = [
-  {
-    model: "GPT-4",
-    strengths: [
-      "Excellent guideline adherence with PCT threshold interpretation",
-      "Strong safety awareness for immunocompromised patients",
-      "Consistent structured output formatting",
-      "Good handling of edge cases and ambiguous data"
-    ],
-    weaknesses: [
-      "Occasional overconfidence in recommendations",
-      "May suggest unnecessary tests when data is complete",
-      "Slightly verbose explanations in some cases"
-    ]
-  },
-  {
-    model: "Claude 3.5",
-    strengths: [
-      "Highly transparent reasoning process",
-      "Excellent at acknowledging uncertainty",
-      "Strong contextual understanding of clinical notes",
-      "Good balance of safety and clinical utility"
-    ],
-    weaknesses: [
-      "Sometimes overly cautious in clear-cut cases",
-      "Occasional inconsistency in PCT threshold application",
-      "May request additional data unnecessarily"
-    ]
-  },
-  {
-    model: "Llama 3",
-    strengths: [
-      "Fast inference time",
-      "Good basic PCT interpretation",
-      "Consistent output structure"
-    ],
-    weaknesses: [
-      "Frequent guideline deviations in complex cases",
-      "Limited safety awareness for special populations",
-      "Prone to hallucinating citation sources",
-      "Weak reasoning for edge cases"
-    ]
-  }
-]
+function average(values: number[]): number | null {
+  if (values.length === 0) return null
+  return values.reduce((sum, value) => sum + value, 0) / values.length
+}
 
-const hallucinationPatterns = [
-  {
-    pattern: "Fabricated Study Citations",
-    frequency: "12% of cases",
-    severity: "high",
-    description: "Model cited non-existent clinical studies or misattributed findings to incorrect sources.",
-    affected: ["Llama 3", "GPT-4 (Baseline)"]
-  },
-  {
-    pattern: "Invented PCT Thresholds",
-    frequency: "8% of cases",
-    severity: "high",
-    description: "Model stated PCT cutoff values that do not align with established guidelines (e.g., claiming 0.15 ng/mL as discontinuation threshold).",
-    affected: ["Llama 3"]
-  },
-  {
-    pattern: "Assumed Patient History",
-    frequency: "15% of cases",
-    severity: "medium",
-    description: "Model made assumptions about patient history not present in the input data (e.g., assuming prior antibiotic courses).",
-    affected: ["Llama 3", "Claude 3.5"]
-  },
-  {
-    pattern: "Misinterpreted Lab Trends",
-    frequency: "6% of cases",
-    severity: "medium",
-    description: "Model described PCT trends that contradicted the actual data provided.",
-    affected: ["Llama 3", "GPT-4 (Baseline)"]
-  }
-]
+function formatScore(value: number | null | undefined): string {
+  return value === null || value === undefined ? "N/A" : `${value.toFixed(1)}%`
+}
 
-function ScoreBar({ score, label }: { score: number; label: string }) {
-  const getColor = (s: number) => {
-    if (s >= 90) return "bg-success"
-    if (s >= 80) return "bg-primary"
-    if (s >= 70) return "bg-warning"
+function formatDate(value: string | undefined): string {
+  if (!value) return "N/A"
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+function scoreOrZero(value: number | null): number {
+  return value ?? 0
+}
+
+function getWeightedScore(model: Pick<ModelRanking, "averageRecommendationMatch" | "averageCriterionAlignment" | "averageSafety" | "averageExplainability">): number {
+  return (
+    scoreOrZero(model.averageRecommendationMatch) * 0.35 +
+    scoreOrZero(model.averageCriterionAlignment) * 0.3 +
+    scoreOrZero(model.averageSafety) * 0.25 +
+    scoreOrZero(model.averageExplainability) * 0.1
+  )
+}
+
+function buildModelRankings(batch: BatchEvaluationResponse): ModelRanking[] {
+  const allResults = batch.cases.flatMap((caseResult) => caseResult.results)
+  const configIds = Array.from(new Set(allResults.map((result) => result.configId)))
+
+  return configIds
+    .map((configId) => {
+      const modelResults = allResults.filter((result) => result.configId === configId)
+      const scored = modelResults.filter(
+        (result): result is LlmEvaluationResult & { scores: NonNullable<LlmEvaluationResult["scores"]> } =>
+          result.status === "success" && !!result.scores,
+      )
+      const ranking = {
+        configId,
+        modelLabel: modelResults[0]?.modelLabel ?? configId,
+        configLabel: modelResults[0]?.configLabel,
+        workflowType: modelResults[0]?.workflowType,
+        workflowName: modelResults[0]?.workflowName,
+        workflowStepCount: modelResults[0]?.workflowStepCount,
+        toolAssisted: modelResults[0]?.toolAssisted,
+        averageRecommendationMatch: average(scored.map((result) => result.scores.recommendationMatch ?? 0)),
+        averageCriterionAlignment: average(scored.map((result) => result.scores.alignment)),
+        averageSafety: average(scored.map((result) => result.scores.safety)),
+        averageExplainability: average(scored.map((result) => result.scores.explainability)),
+        weightedScore: 0,
+        failedCalls: modelResults.filter((result) => result.status === "error").length,
+        casesEvaluated: modelResults.length,
+      }
+
+      return { ...ranking, weightedScore: getWeightedScore(ranking) }
+    })
+    .sort((a, b) => b.weightedScore - a.weightedScore)
+}
+
+function buildWeakestCases(batch: BatchEvaluationResponse): WeakCase[] {
+  return batch.cases
+    .map((caseResult) => {
+      const scored = caseResult.results.filter(
+        (result): result is LlmEvaluationResult & { scores: NonNullable<LlmEvaluationResult["scores"]> } =>
+          result.status === "success" && !!result.scores,
+      )
+
+      return {
+        caseId: caseResult.caseId,
+        title: caseResult.title,
+        expectedReferenceLabel: caseResult.expectedReferenceLabel,
+        averageCriterionAlignment: average(scored.map((result) => result.scores.alignment)),
+        failedCalls: caseResult.results.filter((result) => result.status === "error").length,
+      }
+    })
+    .sort((a, b) => scoreOrZero(a.averageCriterionAlignment) - scoreOrZero(b.averageCriterionAlignment))
+    .slice(0, 5)
+}
+
+function getUnsafeRecommendationExamples(batch: BatchEvaluationResponse) {
+  return batch.cases.flatMap((caseResult) =>
+    caseResult.results
+      .filter(
+        (result) =>
+          result.status === "success" &&
+          result.parsedOutput?.recommendation === "consider_discontinuation" &&
+          caseResult.referenceDecision.recommendation !== "consider_discontinuation",
+      )
+      .map((result) => ({
+        caseTitle: caseResult.title,
+        modelLabel: result.modelLabel,
+        reference: caseResult.referenceDecision.recommendation,
+      })),
+  )
+}
+
+function getMatchedButLowCriterionExamples(batch: BatchEvaluationResponse) {
+  return batch.cases.flatMap((caseResult) =>
+    caseResult.results
+      .filter(
+        (result) =>
+          result.status === "success" &&
+          result.parsedOutput?.recommendation === caseResult.referenceDecision.recommendation &&
+          typeof result.scores?.alignment === "number" &&
+          result.scores.alignment < 70,
+      )
+      .map((result) => ({
+        caseTitle: caseResult.title,
+        modelLabel: result.modelLabel,
+        alignment: result.scores?.alignment ?? null,
+      })),
+  )
+}
+
+function getFailedCalls(batch: BatchEvaluationResponse) {
+  return batch.cases.flatMap((caseResult) =>
+    caseResult.results
+      .filter((result) => result.status === "error")
+      .map((result) => ({
+        caseTitle: caseResult.title,
+        modelLabel: result.modelLabel,
+        failureReason: result.failureReason ?? "unknown",
+        error: result.error ?? "Unknown error",
+      })),
+  )
+}
+
+function ScoreBar({ score, label }: { score: number | null | undefined; label: string }) {
+  const normalized = score ?? 0
+  const getColor = (value: number) => {
+    if (value >= 90) return "bg-success"
+    if (value >= 80) return "bg-primary"
+    if (value >= 70) return "bg-warning"
     return "bg-destructive"
   }
 
@@ -166,60 +255,108 @@ function ScoreBar({ score, label }: { score: number; label: string }) {
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-sm">
         <span className="text-muted-foreground">{label}</span>
-        <span className="font-semibold">{score.toFixed(1)}%</span>
+        <span className="font-semibold">{formatScore(score)}</span>
       </div>
       <div className="h-2.5 bg-muted rounded-full overflow-hidden">
-        <div 
-          className={`h-full rounded-full transition-all ${getColor(score)}`}
-          style={{ width: `${score}%` }}
-        />
+        <div className={`h-full rounded-full transition-all ${getColor(normalized)}`} style={{ width: `${normalized}%` }} />
       </div>
     </div>
   )
 }
 
 export default function ReportsPage() {
+  const [batchResponse, setBatchResponse] = useState<BatchEvaluationResponse | null>(null)
+
+  useEffect(() => {
+    try {
+      const storedBatch = sessionStorage.getItem("latestBatchEvaluationResponse")
+      if (!storedBatch) return
+      setBatchResponse(JSON.parse(storedBatch) as BatchEvaluationResponse)
+    } catch {
+      setBatchResponse(null)
+    }
+  }, [])
+
+  const rankings = useMemo(() => {
+    return batchResponse ? buildModelRankings(batchResponse) : mockRankings
+  }, [batchResponse])
+  const bestConfiguration = rankings[0]
+  const weakestCases = useMemo(() => {
+    return batchResponse ? buildWeakestCases(batchResponse) : []
+  }, [batchResponse])
+  const unsafeExamples = useMemo(() => {
+    return batchResponse ? getUnsafeRecommendationExamples(batchResponse) : []
+  }, [batchResponse])
+  const failedCalls = useMemo(() => {
+    return batchResponse ? getFailedCalls(batchResponse) : []
+  }, [batchResponse])
+  const rateLimitedCalls = failedCalls.filter((call) => call.failureReason === "rate_limited")
+  const matchedLowCriterion = useMemo(() => {
+    return batchResponse ? getMatchedButLowCriterionExamples(batchResponse) : []
+  }, [batchResponse])
+  const isRealReport = Boolean(batchResponse)
+
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar activePage="Reports" />
-      
+
       <div className="flex-1 flex flex-col">
-        <Header 
-          title="Suitability Report" 
+        <Header
+          title="Suitability Report"
           description="LLM Configuration Assessment for PCT-Guided Antibiotic Stewardship"
         />
-        
+
         <main className="flex-1 p-6 overflow-auto">
-          {/* Action Buttons */}
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-2">
+          <Card className={`mb-6 ${isRealReport ? "border-success/30 bg-success/5" : "border-warning/30 bg-warning/5"}`}>
+            <CardContent className="pt-6">
+              <div className="flex items-start gap-3">
+                {isRealReport ? (
+                  <CheckCircle2 className="h-5 w-5 text-success mt-0.5 shrink-0" />
+                ) : (
+                  <AlertTriangle className="h-5 w-5 text-warning-foreground mt-0.5 shrink-0" />
+                )}
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    {isRealReport ? "Generated from latest batch benchmark run" : "Mock report view for proposal/demo purposes."}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {isRealReport
+                      ? "This report is computed from sessionStorage.latestBatchEvaluationResponse and is not persisted on the server."
+                      : "Run a batch benchmark to replace these illustrative/mock values with real aggregate reporting."}
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-6">
+            <div className="flex flex-wrap items-center gap-2">
               <Badge variant="outline" className="text-muted-foreground">
-                Report Generated: April 20, 2026
+                Report Generated: {isRealReport ? formatDate(batchResponse?.createdAt) : "Demo"}
               </Badge>
               <Badge variant="outline" className="text-muted-foreground">
-                48 Cases Evaluated
+                {isRealReport ? `${batchResponse?.caseCount ?? 0} Cases Evaluated` : "48 Cases Evaluated (Mock)"}
               </Badge>
               <Badge variant="outline" className="text-muted-foreground">
-                4 Configurations Tested
+                {isRealReport ? `${batchResponse?.modelCount ?? 0} Configurations Tested` : "3 Configurations Tested (Mock)"}
               </Badge>
             </div>
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm">
+              <Button variant="outline" size="sm" disabled>
                 <FileText className="h-4 w-4 mr-2" />
                 Export PDF
               </Button>
-              <Button variant="outline" size="sm">
+              <Button variant="outline" size="sm" disabled>
                 <Download className="h-4 w-4 mr-2" />
                 Download CSV
               </Button>
-              <Button size="sm">
+              <Button size="sm" disabled>
                 <Save className="h-4 w-4 mr-2" />
                 Save Report
               </Button>
             </div>
           </div>
 
-          {/* Executive Summary */}
           <Card className="mb-6 border-l-4 border-l-primary">
             <CardHeader className="pb-3">
               <div className="flex items-center gap-2">
@@ -228,93 +365,90 @@ export default function ReportsPage() {
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <p className="text-foreground leading-relaxed">
-                This evaluation assessed four LLM configurations for suitability in PCT-guided antibiotic 
-                stewardship decision support. Testing covered 48 clinical cases spanning community-acquired 
-                pneumonia, sepsis, and respiratory infections with varying complexity levels.
-              </p>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
-                <div className="flex items-start gap-3 p-3 bg-success/10 rounded-lg border border-success/20">
-                  <CheckCircle2 className="h-5 w-5 text-success mt-0.5 shrink-0" />
-                  <div>
-                    <p className="font-medium text-sm">Top Performer</p>
-                    <p className="text-sm text-muted-foreground">GPT-4 + Verification Workflow achieved 91.2% overall suitability</p>
+              {isRealReport ? (
+                <>
+                  <p className="text-foreground leading-relaxed">
+                    Batch <span className="font-medium">{batchResponse?.batchId}</span> evaluated{" "}
+                    <span className="font-medium">{batchResponse?.caseCount}</span> cases across{" "}
+                    <span className="font-medium">{batchResponse?.modelCount}</span> workflows/configurations using{" "}
+                    <span className="font-medium">{batchResponse?.providerId}</span>.
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-2">
+                    <MetricCard label="Recommendation Match" value={formatScore(batchResponse?.aggregate.averageRecommendationMatch)} icon={<Target className="h-5 w-5 text-primary" />} />
+                    <MetricCard label="Criterion Alignment" value={formatScore(batchResponse?.aggregate.averageCriterionAlignment)} icon={<TrendingUp className="h-5 w-5 text-primary" />} />
+                    <MetricCard label="Safety Score" value={formatScore(batchResponse?.aggregate.averageSafety)} icon={<Shield className="h-5 w-5 text-success" />} />
+                    <MetricCard label="Explainability" value={formatScore(batchResponse?.aggregate.averageExplainability)} icon={<Brain className="h-5 w-5 text-accent" />} />
                   </div>
-                </div>
-                <div className="flex items-start gap-3 p-3 bg-warning/10 rounded-lg border border-warning/20">
-                  <AlertTriangle className="h-5 w-5 text-warning mt-0.5 shrink-0" />
-                  <div>
-                    <p className="font-medium text-sm">Safety Concern</p>
-                    <p className="text-sm text-muted-foreground">Llama 3 showed 28% higher safety flag rate than top performer</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <MetricCard label="Failed Model Calls" value={String(batchResponse?.aggregate.failedModelCalls ?? 0)} icon={<XCircle className="h-5 w-5 text-destructive" />} />
+                    <MetricCard label="Unsafe / Caution Findings" value={String(batchResponse?.aggregate.totalSafetyWarnings ?? 0)} icon={<AlertTriangle className="h-5 w-5 text-warning" />} />
                   </div>
-                </div>
-                <div className="flex items-start gap-3 p-3 bg-primary/10 rounded-lg border border-primary/20">
-                  <Brain className="h-5 w-5 text-primary mt-0.5 shrink-0" />
-                  <div>
-                    <p className="font-medium text-sm">Key Finding</p>
-                    <p className="text-sm text-muted-foreground">Verification workflow prompts reduced hallucinations by 64%</p>
-                  </div>
-                </div>
-              </div>
+                </>
+              ) : (
+                <p className="text-foreground leading-relaxed">
+                  This is an illustrative/mock executive summary for proposal/demo purposes. Run a batch benchmark to generate provider, case, model, and score metrics from real results.
+                </p>
+              )}
             </CardContent>
           </Card>
 
-          {/* Configuration Rankings */}
           <Card className="mb-6">
             <CardHeader>
               <div className="flex items-center gap-2">
                 <Award className="h-5 w-5 text-primary" />
-                <CardTitle className="text-lg">Configuration Rankings</CardTitle>
+                <CardTitle className="text-lg">Workflow / Configuration Ranking</CardTitle>
               </div>
               <CardDescription>
-                Overall suitability scores based on weighted evaluation criteria
+                {isRealReport
+                  ? "Weighted score: recommendation match 35%, criterion alignment 30%, safety 25%, explainability 10%"
+                  : "Mock/demo ranking shown until a batch result is available"}
               </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {configurations.map((config) => (
-                  <div 
-                    key={config.rank}
-                    className={`p-4 rounded-lg border ${
-                      config.rank === 1 ? "bg-success/5 border-success/30" : "bg-card"
-                    }`}
+                {rankings.map((config, index) => (
+                  <div
+                    key={config.configId}
+                    className={`p-4 rounded-lg border ${index === 0 ? "bg-success/5 border-success/30" : "bg-card"}`}
                   >
-                    <div className="flex items-start justify-between mb-4">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between mb-4">
                       <div className="flex items-center gap-3">
-                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
-                          config.rank === 1 ? "bg-success text-success-foreground" :
-                          config.rank === 2 ? "bg-primary text-primary-foreground" :
-                          config.rank === 3 ? "bg-warning text-warning-foreground" :
-                          "bg-muted text-muted-foreground"
-                        }`}>
-                          {config.rank}
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${index === 0 ? "bg-success text-success-foreground" : "bg-muted text-muted-foreground"}`}>
+                          {index + 1}
                         </div>
                         <div>
-                          <h4 className="font-semibold">{config.name}</h4>
-                          <p className="text-sm text-muted-foreground">
-                            {config.model} with {config.prompt} prompt strategy
+                          <h4 className="font-semibold">{config.configLabel ?? config.modelLabel}</h4>
+                          <p className="text-sm text-muted-foreground">{config.configId}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {config.casesEvaluated} cases evaluated | {config.failedCalls} failed calls
                           </p>
+                          {config.workflowType ? (
+                            <Badge variant="outline" className="mt-2">
+                              {config.workflowType}
+                            </Badge>
+                          ) : null}
+                          {config.workflowStepCount ? (
+                            <Badge variant="outline" className="mt-2 ml-2">
+                              {config.workflowStepCount} steps
+                            </Badge>
+                          ) : null}
+                          {config.toolAssisted ? (
+                            <Badge variant="secondary" className="mt-2 ml-2">
+                              Tool-assisted
+                            </Badge>
+                          ) : null}
                         </div>
                       </div>
-                      <div className="text-right">
-                        <div className="text-2xl font-bold">{config.overall}%</div>
-                        <Badge 
-                          variant={config.badge as "default" | "secondary" | "destructive" | "outline"}
-                          className={
-                            config.badge === "success" ? "bg-success text-success-foreground" :
-                            config.badge === "warning" ? "bg-warning text-warning-foreground" :
-                            ""
-                          }
-                        >
-                          {config.recommendation}
-                        </Badge>
+                      <div className="md:text-right">
+                        <div className="text-2xl font-bold">{config.weightedScore.toFixed(1)}%</div>
+                        <Badge variant={index === 0 ? "secondary" : "outline"}>{index === 0 ? "Best ranked" : "Ranked"}</Badge>
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                      <ScoreBar score={config.guideline} label="Guideline Alignment" />
-                      <ScoreBar score={config.safety} label="Safety" />
-                      <ScoreBar score={config.explainability} label="Explainability" />
-                      <ScoreBar score={config.robustness} label="Robustness" />
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                      <ScoreBar score={config.averageRecommendationMatch} label="Recommendation Match" />
+                      <ScoreBar score={config.averageCriterionAlignment} label="Criterion Alignment" />
+                      <ScoreBar score={config.averageSafety} label="Safety" />
+                      <ScoreBar score={config.averageExplainability} label="Explainability" />
                     </div>
                   </div>
                 ))}
@@ -322,260 +456,243 @@ export default function ReportsPage() {
             </CardContent>
           </Card>
 
-          {/* Score Breakdown Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
             <Card>
-              <CardHeader className="pb-2">
-                <div className="flex items-center gap-2">
-                  <TrendingUp className="h-4 w-4 text-primary" />
-                  <CardTitle className="text-sm font-medium">Guideline Alignment</CardTitle>
-                </div>
+              <CardHeader>
+                <CardTitle className="text-lg">Best Performing Configuration</CardTitle>
+                <CardDescription>Highest weighted score in this report</CardDescription>
               </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold mb-1">88.3%</div>
-                <p className="text-xs text-muted-foreground mb-3">Average across all configs</p>
-                <div className="space-y-2 text-xs">
-                  <div className="flex justify-between">
-                    <span>Best: GPT-4 + Verification</span>
-                    <span className="font-medium">94.5%</span>
-                  </div>
-                  <div className="flex justify-between text-muted-foreground">
-                    <span>Worst: Llama 3 + CoT</span>
-                    <span>71.5%</span>
-                  </div>
-                </div>
+              <CardContent className="space-y-4">
+                {bestConfiguration ? (
+                  <>
+                    <div className="flex items-center gap-4 p-4 bg-card rounded-lg border">
+                      <div className="w-12 h-12 rounded-full bg-success flex items-center justify-center">
+                        <CheckCircle2 className="h-6 w-6 text-success-foreground" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-semibold text-lg">{bestConfiguration.configLabel ?? bestConfiguration.modelLabel}</h4>
+                        <p className="text-sm text-muted-foreground break-all">{bestConfiguration.configId}</p>
+                        {bestConfiguration.workflowType ? (
+                          <Badge variant="outline" className="mt-2">
+                            {bestConfiguration.workflowType}
+                          </Badge>
+                        ) : null}
+                        {bestConfiguration.workflowStepCount ? (
+                          <Badge variant="outline" className="mt-2 ml-2">
+                            {bestConfiguration.workflowStepCount} steps
+                          </Badge>
+                        ) : null}
+                        {bestConfiguration.toolAssisted ? (
+                          <Badge variant="secondary" className="mt-2 ml-2">
+                            Tool-assisted
+                          </Badge>
+                        ) : null}
+                      </div>
+                      <div className="text-right">
+                        <div className="text-2xl font-bold text-success">{bestConfiguration.weightedScore.toFixed(1)}%</div>
+                        <p className="text-xs text-muted-foreground">Weighted</p>
+                      </div>
+                    </div>
+                    <p className="text-sm text-muted-foreground">
+                      This configuration led the run based on final recommendation accuracy, criterion-level logic, safety, and explainability.
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No successful configuration scores are available.</p>
+                )}
               </CardContent>
             </Card>
 
             <Card>
-              <CardHeader className="pb-2">
-                <div className="flex items-center gap-2">
-                  <Shield className="h-4 w-4 text-success" />
-                  <CardTitle className="text-sm font-medium">Safety Score</CardTitle>
-                </div>
+              <CardHeader>
+                <CardTitle className="text-lg">Weakest Cases</CardTitle>
+                <CardDescription>Lowest average criterion alignment</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="text-3xl font-bold mb-1">86.1%</div>
-                <p className="text-xs text-muted-foreground mb-3">Average across all configs</p>
-                <div className="space-y-2 text-xs">
-                  <div className="flex justify-between">
-                    <span>Best: GPT-4 + Verification</span>
-                    <span className="font-medium">96.0%</span>
+                {isRealReport && weakestCases.length > 0 ? (
+                  <div className="space-y-3">
+                    {weakestCases.map((caseResult) => (
+                      <div key={caseResult.caseId} className="rounded-lg border border-border p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium">{caseResult.title}</p>
+                            <p className="text-xs text-muted-foreground">Expected: {caseResult.expectedReferenceLabel}</p>
+                          </div>
+                          <Badge variant="outline">{formatScore(caseResult.averageCriterionAlignment)}</Badge>
+                        </div>
+                        {caseResult.failedCalls > 0 ? (
+                          <p className="text-xs text-muted-foreground mt-2">{caseResult.failedCalls} failed model calls</p>
+                        ) : null}
+                      </div>
+                    ))}
                   </div>
-                  <div className="flex justify-between text-muted-foreground">
-                    <span>Worst: Llama 3 + CoT</span>
-                    <span>72.0%</span>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-2">
-                <div className="flex items-center gap-2">
-                  <Brain className="h-4 w-4 text-accent" />
-                  <CardTitle className="text-sm font-medium">Explainability</CardTitle>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold mb-1">79.7%</div>
-                <p className="text-xs text-muted-foreground mb-3">Average across all configs</p>
-                <div className="space-y-2 text-xs">
-                  <div className="flex justify-between">
-                    <span>Best: GPT-4 + Verification</span>
-                    <span className="font-medium">88.3%</span>
-                  </div>
-                  <div className="flex justify-between text-muted-foreground">
-                    <span>Worst: Llama 3 + CoT</span>
-                    <span>68.4%</span>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-2">
-                <div className="flex items-center gap-2">
-                  <Activity className="h-4 w-4 text-chart-4" />
-                  <CardTitle className="text-sm font-medium">Robustness</CardTitle>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold mb-1">76.2%</div>
-                <p className="text-xs text-muted-foreground mb-3">Average across all configs</p>
-                <div className="space-y-2 text-xs">
-                  <div className="flex justify-between">
-                    <span>Best: GPT-4 + Verification</span>
-                    <span className="font-medium">86.0%</span>
-                  </div>
-                  <div className="flex justify-between text-muted-foreground">
-                    <span>Worst: Llama 3 + CoT</span>
-                    <span>63.7%</span>
-                  </div>
-                </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    {isRealReport ? "No case-level scores are available." : "Weakest-case analysis will appear after a batch benchmark run."}
+                  </p>
+                )}
               </CardContent>
             </Card>
           </div>
 
-          {/* Strengths & Weaknesses */}
-          <Card className="mb-6">
-            <CardHeader>
-              <CardTitle className="text-lg">Strengths & Weaknesses by Model</CardTitle>
-              <CardDescription>
-                Detailed analysis of each model&apos;s performance characteristics
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {modelAnalysis.map((model) => (
-                  <div key={model.model} className="space-y-4">
-                    <h4 className="font-semibold text-base border-b pb-2">{model.model}</h4>
-                    
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2 text-sm font-medium text-success">
-                        <ThumbsUp className="h-4 w-4" />
-                        Strengths
-                      </div>
-                      <ul className="space-y-1.5">
-                        {model.strengths.map((strength, i) => (
-                          <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
-                            <CheckCircle2 className="h-3.5 w-3.5 text-success mt-0.5 shrink-0" />
-                            {strength}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2 text-sm font-medium text-destructive">
-                        <ThumbsDown className="h-4 w-4" />
-                        Weaknesses
-                      </div>
-                      <ul className="space-y-1.5">
-                        {model.weaknesses.map((weakness, i) => (
-                          <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
-                            <XCircle className="h-3.5 w-3.5 text-destructive mt-0.5 shrink-0" />
-                            {weakness}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Hallucination Patterns */}
           <Card className="mb-6 border-destructive/30">
             <CardHeader>
               <div className="flex items-center gap-2">
                 <AlertOctagon className="h-5 w-5 text-destructive" />
-                <CardTitle className="text-lg">Observed Hallucination Patterns</CardTitle>
+                <CardTitle className="text-lg">Safety / Limitation Findings</CardTitle>
               </div>
               <CardDescription>
-                Critical accuracy issues identified during evaluation
+                {isRealReport ? "Findings computed from the latest batch result" : "Mock/demo limitation section"}
               </CardDescription>
             </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {hallucinationPatterns.map((pattern, index) => (
-                  <div 
-                    key={index}
-                    className={`p-4 rounded-lg border ${
-                      pattern.severity === "high" 
-                        ? "bg-destructive/5 border-destructive/20" 
-                        : "bg-warning/5 border-warning/20"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <Badge 
-                          variant={pattern.severity === "high" ? "destructive" : "outline"}
-                          className={pattern.severity === "medium" ? "bg-warning text-warning-foreground border-warning" : ""}
-                        >
-                          {pattern.severity === "high" ? "High Severity" : "Medium Severity"}
-                        </Badge>
-                        <span className="font-semibold">{pattern.pattern}</span>
-                      </div>
-                      <span className="text-sm text-muted-foreground">{pattern.frequency}</span>
-                    </div>
-                    <p className="text-sm text-muted-foreground mb-2">{pattern.description}</p>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">Affected models:</span>
-                      {pattern.affected.map((model) => (
-                        <Badge key={model} variant="outline" className="text-xs">
-                          {model}
-                        </Badge>
-                      ))}
-                    </div>
+            <CardContent className="space-y-4">
+              {isRealReport ? (
+                <>
+                  <div className="flex items-start gap-3 p-4 bg-background rounded-lg border border-border">
+                    <Info className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0" />
+                    <p className="text-sm text-muted-foreground leading-relaxed">
+                      Unsafe recommendation examples are cases where the model recommended discontinuation or failed to require clinical review while the reference logic required continuing antibiotics, insufficient information handling, or clinical review.
+                    </p>
                   </div>
-                ))}
-              </div>
+                  <FindingBlock
+                    title="Unsafe recommendation examples"
+                    count={unsafeExamples.length}
+                    emptyText="No unsafe discontinuation examples were detected."
+                    items={unsafeExamples.slice(0, 5).map((item) => `${item.modelLabel} on ${item.caseTitle}; reference was ${item.reference}`)}
+                  />
+                  <FindingBlock
+                    title="Failed model calls"
+                    count={failedCalls.length}
+                    emptyText="No failed model calls were recorded."
+                    items={failedCalls.slice(0, 5).map((item) => `${item.modelLabel} on ${item.caseTitle}: ${item.failureReason}`)}
+                  />
+                  <FindingBlock
+                    title="Rate-limited calls"
+                    count={rateLimitedCalls.length}
+                    emptyText="No rate-limited calls were recorded."
+                    items={rateLimitedCalls.slice(0, 5).map((item) => `${item.modelLabel} on ${item.caseTitle}`)}
+                  />
+                  <FindingBlock
+                    title="Final recommendation matched but criterion alignment was low"
+                    count={matchedLowCriterion.length}
+                    emptyText="No low-criterion-alignment matches were detected."
+                    items={matchedLowCriterion.slice(0, 5).map((item) => `${item.modelLabel} on ${item.caseTitle}: ${formatScore(item.alignment)}`)}
+                  />
+                </>
+              ) : (
+                <div className="flex items-start gap-3 p-4 bg-background rounded-lg border border-warning/30">
+                  <Info className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0" />
+                  <p className="text-sm text-muted-foreground">
+                    Mock safety and limitation patterns are hidden until a real batch run exists, so this page does not imply measured claims.
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
 
-          {/* Final Recommendation */}
+          <Card className="mb-6">
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Info className="h-5 w-5 text-primary" />
+                <CardTitle className="text-lg">Methodology & Limitations</CardTitle>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <ul className="space-y-2 text-sm text-muted-foreground">
+                <li className="flex items-start gap-2">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-primary mt-0.5 shrink-0" />
+                  Reference standard: deterministic PCT rule proxy derived from B.R.A.H.M.S/PCT stewardship logic.
+                </li>
+                <li className="flex items-start gap-2">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-primary mt-0.5 shrink-0" />
+                  This benchmark measures alignment with the provided rule logic, not real-world clinical superiority.
+                </li>
+                <li className="flex items-start gap-2">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-primary mt-0.5 shrink-0" />
+                  Thermo Fisher adapted cases are used for realism but are not complete clinical gold-standard patient records.
+                </li>
+                <li className="flex items-start gap-2">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-primary mt-0.5 shrink-0" />
+                  Clinical deployment would require expert validation, regulatory review, and integration with local guidelines.
+                </li>
+              </ul>
+            </CardContent>
+          </Card>
+
           <Card className="border-2 border-primary/30 bg-primary/5">
             <CardHeader>
               <div className="flex items-center gap-2">
                 <Award className="h-5 w-5 text-primary" />
-                <CardTitle className="text-lg">Final Recommendation</CardTitle>
+                <CardTitle className="text-lg">Final Suitability Recommendation</CardTitle>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex items-center gap-4 p-4 bg-card rounded-lg border">
-                <div className="w-12 h-12 rounded-full bg-success flex items-center justify-center">
-                  <CheckCircle2 className="h-6 w-6 text-success-foreground" />
-                </div>
-                <div className="flex-1">
-                  <h4 className="font-semibold text-lg">GPT-4 with Verification Workflow</h4>
-                  <p className="text-muted-foreground">
-                    Recommended for clinical deployment in PCT-guided antibiotic stewardship
-                  </p>
-                </div>
-                <div className="text-right">
-                  <div className="text-3xl font-bold text-success">91.2%</div>
-                  <p className="text-sm text-muted-foreground">Overall Score</p>
-                </div>
-              </div>
-
-              <div className="prose prose-sm max-w-none text-muted-foreground">
-                <p>
-                  Based on comprehensive evaluation across 48 clinical cases, <strong className="text-foreground">GPT-4 with Verification 
-                  Workflow prompting</strong> demonstrates the highest suitability for PCT-guided antibiotic stewardship 
-                  decision support. This configuration achieved superior performance in all four evaluation dimensions:
-                </p>
-                <ul className="mt-2 space-y-1">
-                  <li><strong className="text-foreground">Guideline Alignment (94.5%):</strong> Consistent adherence to PCT threshold guidelines with appropriate interpretation of values</li>
-                  <li><strong className="text-foreground">Safety (96.0%):</strong> Excellent recognition of high-risk populations and contraindications</li>
-                  <li><strong className="text-foreground">Explainability (88.3%):</strong> Clear, traceable reasoning that supports clinical decision-making</li>
-                  <li><strong className="text-foreground">Robustness (86.0%):</strong> Stable performance across case complexity levels and edge cases</li>
-                </ul>
-                <p className="mt-4">
-                  The verification workflow significantly reduces hallucination risk compared to baseline prompting, making 
-                  it the most reliable choice for clinical environments where accuracy is critical.
+              <div className="flex items-start gap-3 p-4 bg-background rounded-lg border">
+                <Info className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0" />
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  {isRealReport && bestConfiguration
+                    ? `Based on this benchmark run, ${bestConfiguration.configLabel ?? bestConfiguration.modelLabel} is the most suitable configuration under the tested PCT reference logic. However, clinical use would require validation, clinician oversight, and stronger handling of edge cases.`
+                    : "This section demonstrates the intended report format. Real recommendations will be generated from batch evaluation results."}
                 </p>
               </div>
 
-              <div className="flex items-center gap-4 pt-4 border-t">
-                <Button>
-                  <FileText className="h-4 w-4 mr-2" />
-                  Export Full Report
-                </Button>
-                <Button variant="outline">
-                  <Download className="h-4 w-4 mr-2" />
-                  Download Raw Data
-                </Button>
-                <Button variant="outline">
-                  <Save className="h-4 w-4 mr-2" />
-                  Save to Library
-                </Button>
-              </div>
+              {bestConfiguration ? (
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <ScoreBar score={bestConfiguration.averageRecommendationMatch} label="Recommendation Match" />
+                  <ScoreBar score={bestConfiguration.averageCriterionAlignment} label="Criterion Alignment" />
+                  <ScoreBar score={bestConfiguration.averageSafety} label="Safety" />
+                  <ScoreBar score={bestConfiguration.averageExplainability} label="Explainability" />
+                </div>
+              ) : null}
             </CardContent>
           </Card>
         </main>
       </div>
+    </div>
+  )
+}
+
+function MetricCard({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-3 p-3 bg-card rounded-lg border border-border">
+      <div className="mt-0.5 shrink-0">{icon}</div>
+      <div>
+        <p className="text-sm font-medium">{label}</p>
+        <p className="text-2xl font-bold text-foreground">{value}</p>
+      </div>
+    </div>
+  )
+}
+
+function FindingBlock({
+  title,
+  count,
+  emptyText,
+  items,
+}: {
+  title: string
+  count: number
+  emptyText: string
+  items: string[]
+}) {
+  return (
+    <div className="rounded-lg border border-border p-4">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <p className="font-medium text-sm">{title}</p>
+        <Badge variant={count > 0 ? "outline" : "secondary"}>{count}</Badge>
+      </div>
+      {items.length > 0 ? (
+        <ul className="space-y-2">
+          {items.map((item) => (
+            <li key={item} className="flex items-start gap-2 text-sm text-muted-foreground">
+              <AlertTriangle className="h-3.5 w-3.5 text-warning mt-0.5 shrink-0" />
+              {item}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-sm text-muted-foreground">{emptyText}</p>
+      )}
     </div>
   )
 }

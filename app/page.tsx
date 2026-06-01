@@ -1,26 +1,42 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Sidebar } from "@/components/dashboard/sidebar"
 import { Header } from "@/components/dashboard/header"
 import { CaseInputForm } from "@/components/dashboard/case-input-form"
 import { SummaryPanel } from "@/components/dashboard/summary-panel"
+import type { ClinicalCase } from "@/lib/types"
 
-const initialCaseData = {
-  patientAge: "",
+const initialCaseData: ClinicalCase = {
+  patientAge: null,
   sex: "",
   symptoms: "",
-  infectionType: "",
-  antibioticStatus: "",
-  pctValue: "",
-  wbcCount: "",
-  crpValue: "",
+  infectionContext: "lrti_non_icu",
+  clinicalImprovement: "unclear",
+  currentAntibioticStatus: "",
+  antibioticsDurationDays: null,
+  peakPct: null,
+  currentPct: null,
+  wbc: null,
+  crp: null,
+  exclusionCondition: "none",
   clinicalNotes: "",
   caseDescription: "",
 }
 
 export default function DashboardPage() {
   const [caseData, setCaseData] = useState(initialCaseData)
+
+  useEffect(() => {
+    try {
+      const stored = sessionStorage.getItem("latestClinicalCase")
+      if (!stored) return
+      const parsed = JSON.parse(stored) as Partial<ClinicalCase>
+      setCaseData({ ...initialCaseData, ...parsed })
+    } catch {
+      // Ignore invalid session storage payloads.
+    }
+  }, [])
 
   return (
     <div className="min-h-screen bg-background flex">
