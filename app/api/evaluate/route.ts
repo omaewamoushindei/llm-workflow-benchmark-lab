@@ -8,12 +8,16 @@ import { buildEvaluationPrompt } from '@/lib/prompt-builder'
 import { normalizeLlmParsedOutput, scoreLlmOutput } from '@/lib/scoring'
 import type {
   ClinicalCase,
+  BenchmarkConfig,
   EvaluationResponse,
+  EvaluationWorkflow,
   LlmEvaluationResult,
   LlmParsedOutput,
   ReferenceChecks,
   ReferenceDecision,
   ReferenceRecommendation,
+  RunControls,
+  WorkflowStep,
 } from '@/lib/types'
 
 type PromptStrategy = 'Baseline Prompt' | 'Structured Prompt' | 'Verification Prompt'
@@ -31,6 +35,25 @@ type ProviderEvaluationConfig = {
   promptStrategy: PromptStrategyId
   promptTemplateId?: string
   promptTemplateText?: string
+  configLabel?: string
+  configType?: 'model_only' | 'workflow'
+  workflowName?: string
+  workflowStepCount?: number
+  toolAssisted?: boolean
+  workflow?: EvaluationWorkflow
+}
+
+const DEFAULT_RUN_CONTROLS: RunControls = {
+  delayBetweenCallsMs: 0,
+  delayBetweenWorkflowStepsMs: 0,
+  maxRetries: 0,
+  retryBackoffMode: 'provider_hint',
+  maxOutputTokens: 1000,
+  compactPromptMode: false,
+  continueOnError: true,
+  stopAfterFailureRatePercent: 100,
+  maxCasesPerRun: 1,
+  maxConfigsPerRun: 1,
 }
 
 const OPENROUTER_FALLBACK_CONFIGS: ProviderEvaluationConfig[] = [
@@ -119,6 +142,8 @@ function parseEvaluateRequestBody(body: unknown): {
   apiKey: string | null
   defaultPromptTemplateId?: string
   defaultPromptTemplateText?: string
+  executionConfig?: ProviderEvaluationConfig
+  runControls: RunControls
 } {
   if (isRecord(body) && isRecord(body.caseData)) {
     const rawSelected = body.selectedModelIds ?? body.selectedModels
@@ -144,6 +169,8 @@ function parseEvaluateRequestBody(body: unknown): {
         typeof body.defaultPromptTemplateText === 'string' && body.defaultPromptTemplateText.trim()
           ? body.defaultPromptTemplateText
           : undefined,
+      executionConfig: parseExecutionConfig(body.executionConfig, providerId),
+      runControls: parseRunControls(body.runControls),
     }
   }
 
@@ -154,6 +181,109 @@ function parseEvaluateRequestBody(body: unknown): {
     apiKey: null,
     defaultPromptTemplateId: undefined,
     defaultPromptTemplateText: undefined,
+    executionConfig: undefined,
+    runControls: DEFAULT_RUN_CONTROLS,
+  }
+}
+
+function parseRunControls(value: unknown): RunControls {
+  if (!isRecord(value)) return DEFAULT_RUN_CONTROLS
+  return {
+    ...DEFAULT_RUN_CONTROLS,
+    maxOutputTokens: readNumber(value.maxOutputTokens, DEFAULT_RUN_CONTROLS.maxOutputTokens, 2000),
+    delayBetweenWorkflowStepsMs: readNumber(
+      value.delayBetweenWorkflowStepsMs,
+      DEFAULT_RUN_CONTROLS.delayBetweenWorkflowStepsMs,
+      60000,
+    ),
+  }
+}
+
+function readNumber(value: unknown, fallback: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return Math.min(Math.max(0, Math.round(value)), max)
+}
+
+function parsePromptStrategy(value: unknown): PromptStrategyId {
+  if (value === 'structured' || value === 'verification') return value
+  return 'baseline'
+}
+
+function parseWorkflowStep(value: unknown): WorkflowStep | null {
+  if (!isRecord(value)) return null
+  const stepType = value.stepType
+  if (
+    stepType !== 'llm_call' &&
+    stepType !== 'deterministic_precheck' &&
+    stepType !== 'verification' &&
+    stepType !== 'final_report'
+  ) {
+    return null
+  }
+  return {
+    id: typeof value.id === 'string' ? value.id : `step-${Math.random().toString(36).slice(2)}`,
+    name: typeof value.name === 'string' ? value.name : 'Workflow step',
+    stepType,
+    modelId: typeof value.modelId === 'string' ? value.modelId : undefined,
+    promptTemplateId: typeof value.promptTemplateId === 'string' ? value.promptTemplateId : undefined,
+    promptTemplateText: typeof value.promptTemplateText === 'string' ? value.promptTemplateText : undefined,
+    inputSource:
+      value.inputSource === 'previous_step' ||
+      value.inputSource === 'reference_checks' ||
+      value.inputSource === 'combined' ||
+      value.inputSource === 'case_data'
+        ? value.inputSource
+        : 'case_data',
+  }
+}
+
+function parseWorkflow(value: unknown): EvaluationWorkflow | undefined {
+  if (!isRecord(value) || !Array.isArray(value.steps)) return undefined
+  const steps = value.steps.map(parseWorkflowStep).filter((step): step is WorkflowStep => step !== null)
+  if (steps.length === 0) return undefined
+  return {
+    id: typeof value.id === 'string' ? value.id : 'execution-workflow',
+    name: typeof value.name === 'string' ? value.name : 'Execution Workflow',
+    description: typeof value.description === 'string' ? value.description : '',
+    steps,
+    isDefault: Boolean(value.isDefault),
+  }
+}
+
+function parseExecutionConfig(value: unknown, fallbackProviderId: LlmProviderId): ProviderEvaluationConfig | undefined {
+  if (!isRecord(value)) return undefined
+  const candidate = value as Partial<BenchmarkConfig> & Record<string, unknown>
+  const workflow = parseWorkflow(candidate.workflow)
+  const configType = candidate.configType === 'workflow' ? 'workflow' : 'model_only'
+  const modelId =
+    typeof candidate.modelId === 'string'
+      ? candidate.modelId
+      : workflow?.steps.find((step) => step.modelId)?.modelId
+  if (!modelId && !workflow) return undefined
+
+  const configId =
+    typeof candidate.configId === 'string' && candidate.configId.trim()
+      ? candidate.configId.trim().replace(/[^a-zA-Z0-9._-]/g, '-')
+      : `execution-${Date.now()}`
+  const label = typeof candidate.label === 'string' ? candidate.label : configId
+  const promptTemplateText =
+    typeof candidate.promptTemplateText === 'string' && candidate.promptTemplateText.trim()
+      ? candidate.promptTemplateText
+      : undefined
+
+  return {
+    configId,
+    modelLabel: typeof candidate.modelLabel === 'string' ? candidate.modelLabel : modelId ?? label,
+    modelId: modelId ?? '',
+    promptStrategy: parsePromptStrategy(candidate.promptStrategy),
+    promptTemplateId: typeof candidate.promptTemplateId === 'string' ? candidate.promptTemplateId : undefined,
+    promptTemplateText,
+    configLabel: label,
+    configType,
+    workflowName: workflow?.name,
+    workflowStepCount: typeof candidate.stepCount === 'number' ? candidate.stepCount : workflow?.steps.length,
+    toolAssisted: Boolean(candidate.toolAssisted) || Boolean(workflow?.steps.some((step) => step.stepType === 'deterministic_precheck')),
+    workflow,
   }
 }
 
@@ -391,13 +521,23 @@ async function buildProviderResult(args: {
   const prompt = buildEvaluationPrompt(caseData, config.promptStrategy, config.promptTemplateText)
   const promptStrategy = getPromptStrategyLabel(config.promptStrategy)
 
-  const rawOutput = await callProviderChatCompletion(
-    providerId,
-    apiKey,
-    config.modelId,
-    [{ role: 'user', content: prompt }],
-    { temperature: 0.1, max_tokens: 1000 },
-  )
+  const rawOutput = config.workflow
+    ? await executeWorkflow({
+        providerId,
+        apiKey,
+        config,
+        caseData,
+        referenceDecision,
+        referenceChecks,
+        maxTokens: 1000,
+      })
+    : await callProviderChatCompletion(
+        providerId,
+        apiKey,
+        config.modelId,
+        [{ role: 'user', content: prompt }],
+        { temperature: 0.1, max_tokens: 1000 },
+      )
 
   const parsedJson = parseLlmJson(rawOutput)
   if (!parsedJson.ok) {
@@ -426,12 +566,85 @@ async function buildProviderResult(args: {
   return {
     configId: config.configId,
     modelLabel: config.modelLabel,
+    configLabel: config.configLabel,
+    configType: config.configType,
+    workflowName: config.workflowName,
+    workflowStepCount: config.workflowStepCount,
+    toolAssisted: config.toolAssisted,
     promptStrategy,
     status: 'success',
     parsedOutput,
     rawOutput,
     scores: scoreLlmOutput(parsedOutput, referenceDecision, caseData, referenceChecks),
   }
+}
+
+function buildWorkflowStepPrompt(args: {
+  step: WorkflowStep
+  caseData: ClinicalCase
+  referenceChecks: ReferenceChecks
+  previousOutput: string
+}): string {
+  const { step, caseData, referenceChecks, previousOutput } = args
+  const basePrompt = step.promptTemplateText || buildEvaluationPrompt(caseData, step.stepType === 'verification' ? 'verification' : 'structured')
+  const referenceContext = JSON.stringify({ referenceChecks }, null, 2)
+  const caseContext = JSON.stringify(caseData, null, 2)
+
+  if (step.inputSource === 'previous_step') {
+    return `${basePrompt}\n\nPrevious step output:\n${previousOutput}`
+  }
+  if (step.inputSource === 'reference_checks') {
+    return `${basePrompt}\n\nDeterministic precheck context:\n${referenceContext}`
+  }
+  if (step.inputSource === 'combined') {
+    return `${basePrompt}\n\nCase data:\n${caseContext}\n\nPrevious step output:\n${previousOutput}\n\nDeterministic precheck context:\n${referenceContext}`
+  }
+  return `${basePrompt}\n\nCase data:\n${caseContext}`
+}
+
+async function executeWorkflow(args: {
+  providerId: LlmProviderId
+  apiKey: string
+  config: ProviderEvaluationConfig
+  caseData: ClinicalCase
+  referenceDecision: ReferenceDecision
+  referenceChecks: ReferenceChecks
+  maxTokens: number
+}): Promise<string> {
+  const { providerId, apiKey, config, caseData, referenceDecision, referenceChecks, maxTokens } = args
+  const workflow = config.workflow
+  if (!workflow) throw new Error('Execution workflow is missing workflow steps.')
+
+  let previousOutput = ''
+  for (const step of workflow.steps) {
+    if (step.stepType === 'deterministic_precheck') {
+      previousOutput = JSON.stringify({ referenceChecks }, null, 2)
+      continue
+    }
+
+    const modelId = step.modelId || config.modelId
+    if (!modelId) throw new Error(`Workflow step "${step.name}" is missing a model.`)
+
+    previousOutput = await callProviderChatCompletion(
+      providerId,
+      apiKey,
+      modelId,
+      [
+        {
+          role: 'user',
+          content: buildWorkflowStepPrompt({
+            step,
+            caseData,
+            referenceChecks,
+            previousOutput,
+          }),
+        },
+      ],
+      { temperature: 0.1, max_tokens: maxTokens },
+    )
+  }
+
+  return previousOutput
 }
 
 function buildMissingApiKeyResults(configs: ProviderEvaluationConfig[]): LlmEvaluationResult[] {
@@ -453,9 +666,12 @@ async function buildProviderResults(
   apiKey: string | null,
   defaultPromptTemplateText?: string,
   defaultPromptTemplateId?: string,
+  executionConfig?: ProviderEvaluationConfig,
 ): Promise<LlmEvaluationResult[]> {
   const configs =
-    selectedModelIds.length > 0
+    executionConfig
+      ? [executionConfig]
+    : selectedModelIds.length > 0
       ? buildCustomProviderConfigs(selectedModelIds, defaultPromptTemplateText, defaultPromptTemplateId)
       : getFallbackProviderConfigs(providerId).map((config) => ({
           ...config,
@@ -503,6 +719,7 @@ export async function POST(request: Request) {
   let apiKey: string | null = null
   let defaultPromptTemplateId: string | undefined
   let defaultPromptTemplateText: string | undefined
+  let executionConfig: ProviderEvaluationConfig | undefined
 
   try {
     // No zod validation yet by design.
@@ -513,6 +730,7 @@ export async function POST(request: Request) {
     apiKey = parsed.apiKey
     defaultPromptTemplateId = parsed.defaultPromptTemplateId
     defaultPromptTemplateText = parsed.defaultPromptTemplateText
+    executionConfig = parsed.executionConfig
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
@@ -533,6 +751,7 @@ export async function POST(request: Request) {
             apiKey,
             defaultPromptTemplateText,
             defaultPromptTemplateId,
+            executionConfig,
           )
 
     const response: EvaluationResponse = {

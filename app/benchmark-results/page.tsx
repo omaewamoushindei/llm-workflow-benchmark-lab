@@ -250,7 +250,7 @@ export default function BenchmarkResultsPage() {
         return
       }
 
-      const stored = sessionStorage.getItem("latestEvaluationResponse")
+      const stored = sessionStorage.getItem("latestSingleCaseExecutionResponse") ?? sessionStorage.getItem("latestEvaluationResponse")
       if (!stored) return
       const parsed = JSON.parse(stored) as EvaluationResponse
       setEvaluationResponse(parsed)
@@ -337,6 +337,9 @@ export default function BenchmarkResultsPage() {
               <p className="text-sm text-muted-foreground mb-6">
                 Batch {batchResponse.batchId} | {batchResponse.caseCount} cases |{" "}
                 {batchResponse.totalConfigCount ?? batchResponse.configCount ?? batchResponse.modelCount} benchmark configs
+              </p>
+              <p className="text-sm text-muted-foreground mb-6">
+                Latest batch benchmark run is shown here. Single-case execution results are separate and are not included in aggregate benchmark reports unless saved to the case library and selected in a batch benchmark.
               </p>
 
               <Card className="mb-6">
@@ -581,6 +584,9 @@ export default function BenchmarkResultsPage() {
           <p className="text-sm text-muted-foreground mb-6">
             Single-case evaluation result. Robustness and batch metrics require a benchmark run.
             <span className="ml-2">Safety warnings: {averages.safetyWarnings}</span>
+          </p>
+          <p className="text-sm text-muted-foreground mb-6">
+            Latest single-case execution is shown here when no batch result is available. It is not included in aggregate benchmark reports unless saved to the case library and selected in a batch benchmark.
           </p>
 
           {/* Configuration Comparison */}

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -13,8 +13,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import type { ClinicalCase, EvaluationResponse } from "@/lib/types"
-import { calculatePctDeclinePercent } from "@/lib/pct-reference"
+import type { BenchmarkConfig, ClinicalCase, EvaluationResponse, LlmEvaluationResult, RunControls } from "@/lib/types"
+import { calculatePctDeclinePercent, evaluateReferenceDecision } from "@/lib/pct-reference"
 import { benchmarkCases, type BenchmarkCase } from "@/lib/benchmark-cases"
 import { DEFAULT_PROMPT_TEMPLATES } from "@/lib/prompt-templates"
 import { Upload, FileText, Play, FlaskConical, Loader2 } from "lucide-react"
@@ -28,10 +28,45 @@ const EVALUATION_SETTINGS_STORAGE_KEY = "evaluationSettings"
 const PROVIDER_API_KEYS_STORAGE_KEY = "providerApiKeys"
 const PROMPT_TEMPLATES_STORAGE_KEY = "promptTemplates"
 const DEFAULT_MODEL_ONLY_PROMPT_TEMPLATE_ID = "default-baseline-pct"
+const CUSTOM_BENCHMARK_CASES_STORAGE_KEY = "customBenchmarkCases"
 const MODEL_FAILURE_MESSAGE =
   "This model failed or is unavailable. Refresh models or choose another model in Evaluation Setup."
 
 type ProviderId = "openrouter" | "groq"
+type ProviderModelMetadata = {
+  id: string
+  name?: string
+  provider?: ProviderId
+  promptPrice?: string | null
+  completionPrice?: string | null
+}
+type BatchEvaluationResponse = {
+  providerId: ProviderId
+  benchmarkConfigs?: BenchmarkConfig[]
+  runControls?: RunControls
+  cases: Array<{
+    results: LlmEvaluationResult[]
+  }>
+}
+type ExecutionConfigOption = {
+  config: BenchmarkConfig
+  label: string
+  configType: "model_only" | "workflow"
+  weightedScore: number | null
+  recommendationMatch: number | null
+  criterionAlignment: number | null
+  safety: number | null
+  explainability: number | null
+  failedCalls: number
+  stepCount: number
+  estimatedCalls: number
+  toolAssisted: boolean
+  modelName?: string
+  promptTemplateName?: string
+  workflowName?: string
+  pricingText: string
+  estimatedCostText: string
+}
 type BenchmarkCaseFilter =
   | "all"
   | "thermo"
@@ -41,6 +76,28 @@ type BenchmarkCaseFilter =
   | "missing_information"
   | "lrti"
   | "sepsis_icu"
+
+function average(values: number[]): number | null {
+  if (values.length === 0) return null
+  return values.reduce((sum, value) => sum + value, 0) / values.length
+}
+
+function scoreOrZero(value: number | null): number {
+  return value ?? 0
+}
+
+function formatScore(value: number | null | undefined): string {
+  return value === null || value === undefined ? "N/A" : `${value.toFixed(1)}%`
+}
+
+function getWeightedScore(option: Pick<ExecutionConfigOption, "recommendationMatch" | "criterionAlignment" | "safety" | "explainability">): number {
+  return (
+    scoreOrZero(option.recommendationMatch) * 0.35 +
+    scoreOrZero(option.criterionAlignment) * 0.3 +
+    scoreOrZero(option.safety) * 0.25 +
+    scoreOrZero(option.explainability) * 0.1
+  )
+}
 
 function formatSourceType(sourceType: BenchmarkCase["sourceType"]): string {
   return sourceType === "thermo_case_adapted"
@@ -211,6 +268,193 @@ function readProviderApiKey(providerId: ProviderId): string | null {
   }
 }
 
+function readLatestBatchResponse(): BatchEvaluationResponse | null {
+  try {
+    const raw = window.sessionStorage.getItem("latestBatchEvaluationResponse")
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as BatchEvaluationResponse
+    return Array.isArray(parsed.cases) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function readProviderModelCatalog(): ProviderModelMetadata[] {
+  try {
+    const raw = window.sessionStorage.getItem("latestProviderModelCatalog")
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as { models?: ProviderModelMetadata[] }
+    return Array.isArray(parsed.models) ? parsed.models : []
+  } catch {
+    return []
+  }
+}
+
+function readRunControls(): RunControls | undefined {
+  try {
+    const raw = window.localStorage.getItem(EVALUATION_SETTINGS_STORAGE_KEY)
+    if (!raw) return undefined
+    const parsed = JSON.parse(raw) as { runControls?: RunControls }
+    return parsed.runControls
+  } catch {
+    return undefined
+  }
+}
+
+function getModelIdsForConfig(config: BenchmarkConfig): string[] {
+  if (config.configType === "workflow" && config.workflow) {
+    return config.workflow.steps
+      .filter((step) => step.stepType !== "deterministic_precheck" && !!step.modelId)
+      .map((step) => step.modelId as string)
+  }
+  return config.modelId ? [config.modelId] : []
+}
+
+function getEstimatedCallsForConfig(config: BenchmarkConfig): number {
+  const calls = getModelIdsForConfig(config).length
+  return Math.max(1, calls)
+}
+
+function getPromptTemplateName(promptTemplateId: string | undefined): string | undefined {
+  if (!promptTemplateId) return undefined
+  const template = readPromptTemplates().find((item) => item.id === promptTemplateId)
+  return template?.name
+}
+
+function readPriceNumber(value: string | null | undefined): number | null {
+  if (value === null || value === undefined) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function getPricingForConfig(config: BenchmarkConfig, catalog: ProviderModelMetadata[]): {
+  pricingText: string
+  estimatedCostText: string
+  modelName?: string
+} {
+  const modelIds = getModelIdsForConfig(config)
+  const models = modelIds.map((id) => catalog.find((model) => model.id === id)).filter(Boolean) as ProviderModelMetadata[]
+  const modelName = models[0]?.name ?? modelIds[0]
+
+  if (modelIds.length === 0 || models.length !== modelIds.length) {
+    return {
+      pricingText:
+        config.providerId === "groq"
+          ? "Pricing unavailable from catalog. Free/on-demand usage may be rate-limited."
+          : "Pricing unavailable",
+      estimatedCostText: "Estimated cost unavailable",
+      modelName,
+    }
+  }
+
+  const prices = models.map((model) => ({
+    prompt: readPriceNumber(model.promptPrice),
+    completion: readPriceNumber(model.completionPrice),
+  }))
+  if (prices.some((price) => price.prompt === null || price.completion === null)) {
+    return {
+      pricingText:
+        config.providerId === "groq"
+          ? "Pricing unavailable from catalog. Free/on-demand usage may be rate-limited."
+          : "Pricing unavailable",
+      estimatedCostText: modelIds.length > 1 ? "Partial/unknown workflow estimate" : "Estimated cost unavailable",
+      modelName,
+    }
+  }
+
+  const promptTotal = prices.reduce((sum, price) => sum + (price.prompt ?? 0), 0)
+  const completionTotal = prices.reduce((sum, price) => sum + (price.completion ?? 0), 0)
+  return {
+    pricingText: `Input ${promptTotal}/token | Output ${completionTotal}/token`,
+    estimatedCostText: `Estimated single-case cost depends on token usage across ${getEstimatedCallsForConfig(config)} call(s).`,
+    modelName,
+  }
+}
+
+function buildExecutionOptions(batch: BatchEvaluationResponse | null, catalog: ProviderModelMetadata[]): ExecutionConfigOption[] {
+  if (!batch) return []
+
+  const configsById = new Map((batch.benchmarkConfigs ?? []).map((config) => [config.configId, config]))
+  const allResults = batch.cases.flatMap((caseResult) => caseResult.results)
+  const configIds = Array.from(new Set([...configsById.keys(), ...allResults.map((result) => result.configId)]))
+
+  return configIds
+    .map((configId): ExecutionConfigOption | null => {
+      const results = allResults.filter((result) => result.configId === configId)
+      const scored = results.filter(
+        (result): result is LlmEvaluationResult & { scores: NonNullable<LlmEvaluationResult["scores"]> } =>
+          result.status === "success" && !!result.scores,
+      )
+      const fallbackResult = results[0]
+      const config =
+        configsById.get(configId) ??
+        ({
+          configId,
+          label: fallbackResult?.configLabel ?? fallbackResult?.modelLabel ?? configId,
+          configType: fallbackResult?.configType ?? "model_only",
+          providerId: batch.providerId,
+          modelId: fallbackResult?.modelLabel,
+          stepCount: fallbackResult?.workflowStepCount,
+          toolAssisted: fallbackResult?.toolAssisted,
+        } satisfies BenchmarkConfig)
+      const recommendationMatch = average(scored.map((result) => result.scores.recommendationMatch ?? 0))
+      const criterionAlignment = average(scored.map((result) => result.scores.alignment))
+      const safety = average(scored.map((result) => result.scores.safety))
+      const explainability = average(scored.map((result) => result.scores.explainability))
+      const pricing = getPricingForConfig(config, catalog)
+      const option = {
+        config,
+        label: config.label ?? fallbackResult?.configLabel ?? fallbackResult?.modelLabel ?? configId,
+        configType: config.configType,
+        weightedScore: null,
+        recommendationMatch,
+        criterionAlignment,
+        safety,
+        explainability,
+        failedCalls: results.filter((result) => result.status === "error").length,
+        stepCount: config.stepCount ?? config.workflow?.steps.length ?? 1,
+        estimatedCalls: getEstimatedCallsForConfig(config),
+        toolAssisted: Boolean(config.toolAssisted),
+        modelName: pricing.modelName,
+        promptTemplateName: getPromptTemplateName(config.promptTemplateId),
+        workflowName: config.workflow?.name ?? fallbackResult?.workflowName,
+        pricingText: pricing.pricingText,
+        estimatedCostText: pricing.estimatedCostText,
+      }
+      return { ...option, weightedScore: getWeightedScore(option) }
+    })
+    .filter((option): option is ExecutionConfigOption => option !== null)
+    .sort((a, b) => {
+      return (
+        scoreOrZero(b.weightedScore) - scoreOrZero(a.weightedScore) ||
+        scoreOrZero(b.safety) - scoreOrZero(a.safety) ||
+        a.failedCalls - b.failedCalls
+      )
+    })
+}
+
+function hydrateExecutionConfig(config: BenchmarkConfig): BenchmarkConfig {
+  const promptTemplates = readPromptTemplates()
+  const templateById = new Map(promptTemplates.map((template) => [template.id, template]))
+  const promptTemplateText =
+    config.promptTemplateText ?? (config.promptTemplateId ? templateById.get(config.promptTemplateId)?.text : undefined)
+
+  return {
+    ...config,
+    promptTemplateText,
+    workflow: config.workflow
+      ? {
+          ...config.workflow,
+          steps: config.workflow.steps.map((step) => ({
+            ...step,
+            promptTemplateText:
+              step.promptTemplateText ?? (step.promptTemplateId ? templateById.get(step.promptTemplateId)?.text : undefined),
+          })),
+        }
+      : undefined,
+  }
+}
+
 function getLlmResultsDescription(response: EvaluationResponse): string {
   if (response.metadata?.evaluationMode === "live") {
     return `Live outputs from ${response.metadata.providerLabel || response.metadata.providerId || "selected provider"}`
@@ -315,10 +559,16 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
   const [evaluationResponse, setEvaluationResponse] = useState<EvaluationResponse | null>(null)
   const [selectedBenchmarkCaseId, setSelectedBenchmarkCaseId] = useState<string>("")
   const [benchmarkCaseFilter, setBenchmarkCaseFilter] = useState<BenchmarkCaseFilter>("all")
+  const [latestBatchResponse, setLatestBatchResponse] = useState<BatchEvaluationResponse | null>(null)
+  const [providerModelCatalog, setProviderModelCatalog] = useState<ProviderModelMetadata[]>([])
+  const [selectedExecutionConfigId, setSelectedExecutionConfigId] = useState<string>("")
+  const [saveCaseMessage, setSaveCaseMessage] = useState<string | null>(null)
 
   useEffect(() => {
     try {
-      const stored = sessionStorage.getItem("latestEvaluationResponse")
+      setLatestBatchResponse(readLatestBatchResponse())
+      setProviderModelCatalog(readProviderModelCatalog())
+      const stored = sessionStorage.getItem("latestSingleCaseExecutionResponse") ?? sessionStorage.getItem("latestEvaluationResponse")
       if (!stored) return
       const parsed = JSON.parse(stored) as EvaluationResponse
       setEvaluationResponse(parsed)
@@ -326,6 +576,16 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
       // Ignore invalid session storage payloads.
     }
   }, [])
+
+  useEffect(() => {
+    const options = buildExecutionOptions(latestBatchResponse, providerModelCatalog)
+    if (options.length === 0) return
+    setSelectedExecutionConfigId((current) =>
+      current && options.some((option) => option.config.configId === current)
+        ? current
+        : options[0].config.configId,
+    )
+  }, [latestBatchResponse, providerModelCatalog])
 
   const updateCaseData = (patch: Partial<ClinicalCase>) => {
     onCaseDataChange({ ...caseData, ...patch })
@@ -345,6 +605,9 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
       setDragActive(true)
     } else if (e.type === "dragleave") {
       setDragActive(false)
+    } else if (e.type === "drop") {
+      setDragActive(false)
+      void handleCaseFileUpload(e.dataTransfer.files?.[0] ?? null)
     }
   }
 
@@ -353,6 +616,12 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
   const filteredBenchmarkCases = benchmarkCases.filter((benchmarkCase) =>
     benchmarkCaseMatchesFilter(benchmarkCase, benchmarkCaseFilter),
   )
+  const executionOptions = useMemo(
+    () => buildExecutionOptions(latestBatchResponse, providerModelCatalog),
+    [latestBatchResponse, providerModelCatalog],
+  )
+  const selectedExecutionOption =
+    executionOptions.find((option) => option.config.configId === selectedExecutionConfigId) ?? null
 
   const loadBenchmarkCase = (benchmarkCaseId: string) => {
     const benchmarkCase = benchmarkCases.find((item) => item.id === benchmarkCaseId)
@@ -372,6 +641,52 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
     }
   }
 
+  const handleCaseFileUpload = async (file: File | null) => {
+    if (!file) return
+    const extension = file.name.split(".").pop()?.toLowerCase()
+    if (extension !== "txt") {
+      setError("PDF/DOCX parsing is not implemented in this MVP.")
+      return
+    }
+
+    const text = await file.text()
+    updateCaseData({
+      caseDescription: [caseData.caseDescription, text].filter(Boolean).join("\n\n"),
+    })
+    setError(null)
+  }
+
+  const saveToCaseLibrary = () => {
+    try {
+      const now = new Date().toISOString()
+      const referenceDecision = evaluateReferenceDecision(caseData)
+      const title =
+        caseData.caseDescription.split("\n")[0]?.trim().slice(0, 80) ||
+        caseData.clinicalNotes.split("\n")[0]?.trim().slice(0, 80) ||
+        `Manual case ${now}`
+      const customCase = {
+        id: `custom-${Date.now()}`,
+        title,
+        sourceType: "synthetic_algorithm_case" as const,
+        description: caseData.caseDescription || caseData.clinicalNotes || "Manual case saved from Case Input.",
+        caseData,
+        expectedReferenceLabel: referenceDecision.recommendation,
+        tags: ["custom", caseData.infectionContext, referenceDecision.recommendation],
+        sourceNote: "Saved from manual Case Input execution page.",
+        limitations: "User-entered case. Structured fields should be reviewed before batch benchmarking.",
+        createdAt: now,
+        updatedAt: now,
+      }
+      const raw = window.localStorage.getItem(CUSTOM_BENCHMARK_CASES_STORAGE_KEY)
+      const existing = raw ? JSON.parse(raw) : []
+      const next = Array.isArray(existing) ? [...existing, customCase] : [customCase]
+      window.localStorage.setItem(CUSTOM_BENCHMARK_CASES_STORAGE_KEY, JSON.stringify(next))
+      setSaveCaseMessage("Saved to local custom case library.")
+    } catch {
+      setSaveCaseMessage("Could not save this case to the local case library.")
+    }
+  }
+
   const pctDeclinePercent = calculatePctDeclinePercent(caseData.peakPct, caseData.currentPct)
 
   const runEvaluation = async () => {
@@ -380,7 +695,10 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
 
     try {
       const evaluationSettings = readEvaluationSettings()
-      const apiKey = readProviderApiKey(evaluationSettings.providerId)
+      const executionConfig = selectedExecutionOption?.config
+      const providerId = executionConfig?.providerId ?? evaluationSettings.providerId
+      const apiKey = readProviderApiKey(providerId)
+      const hydratedExecutionConfig = executionConfig ? hydrateExecutionConfig(executionConfig) : null
 
       const response = await fetch("/api/evaluate", {
         method: "POST",
@@ -389,11 +707,14 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
         },
         body: JSON.stringify({
           caseData,
-          providerId: evaluationSettings.providerId,
+          providerId,
           apiKey,
-          selectedModelIds: evaluationSettings.selectedModelIds,
+          selectedModelIds: hydratedExecutionConfig ? [] : evaluationSettings.selectedModelIds.slice(0, 1),
           defaultPromptTemplateId: evaluationSettings.defaultPromptTemplateId,
           defaultPromptTemplateText: evaluationSettings.defaultPromptTemplateText,
+          executionConfig: hydratedExecutionConfig,
+          promptTemplates: readPromptTemplates(),
+          runControls: readRunControls(),
         }),
       })
 
@@ -404,6 +725,7 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
 
       const json = (await response.json()) as EvaluationResponse
       setEvaluationResponse(json)
+      sessionStorage.setItem("latestSingleCaseExecutionResponse", JSON.stringify(json))
       sessionStorage.setItem("latestEvaluationResponse", JSON.stringify(json))
       sessionStorage.setItem("latestClinicalCase", JSON.stringify(caseData))
     } catch (e) {
@@ -419,6 +741,113 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
     <div className="space-y-6">
       <Card>
         <CardHeader className="pb-4">
+          <CardTitle className="text-lg">Execution Configuration</CardTitle>
+          <CardDescription>
+            Choose one ranked benchmark configuration for this manual case
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {executionOptions.length > 0 ? (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="executionConfig">Ranked configuration</Label>
+                <Select value={selectedExecutionConfigId} onValueChange={setSelectedExecutionConfigId}>
+                  <SelectTrigger id="executionConfig">
+                    <SelectValue placeholder="Select execution configuration" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {executionOptions.map((option) => (
+                      <SelectItem key={option.config.configId} value={option.config.configId}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Configurations are sorted by latest benchmark report. You can override the recommendation.
+                </p>
+              </div>
+
+              {selectedExecutionOption ? (
+                <div className="rounded-lg border border-border p-4 space-y-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium text-foreground">{selectedExecutionOption.label}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {selectedExecutionOption.configType} | {selectedExecutionOption.stepCount} step(s) |{" "}
+                        {selectedExecutionOption.estimatedCalls} estimated LLM call(s)
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <span className="rounded-full border border-border px-2.5 py-1 text-xs">
+                        Weighted {formatScore(selectedExecutionOption.weightedScore)}
+                      </span>
+                      {selectedExecutionOption.toolAssisted ? (
+                        <span className="rounded-full border border-border px-2.5 py-1 text-xs">Tool-assisted</span>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Recommendation</p>
+                      <p className="text-sm font-medium">{formatScore(selectedExecutionOption.recommendationMatch)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Criterion</p>
+                      <p className="text-sm font-medium">{formatScore(selectedExecutionOption.criterionAlignment)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Safety</p>
+                      <p className="text-sm font-medium">{formatScore(selectedExecutionOption.safety)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Explainability</p>
+                      <p className="text-sm font-medium">{formatScore(selectedExecutionOption.explainability)}</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Model / Workflow</p>
+                      <p className="text-sm text-foreground">
+                        {selectedExecutionOption.workflowName ??
+                          selectedExecutionOption.modelName ??
+                          selectedExecutionOption.config.modelId ??
+                          "N/A"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Prompt template</p>
+                      <p className="text-sm text-foreground">{selectedExecutionOption.promptTemplateName ?? "N/A"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Pricing</p>
+                      <p className="text-sm text-foreground">{selectedExecutionOption.pricingText}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Single-case estimate</p>
+                      <p className="text-sm text-foreground">{selectedExecutionOption.estimatedCostText}</p>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="rounded-lg border border-warning/30 bg-warning/5 p-4">
+              <p className="text-sm font-medium text-foreground">
+                No benchmark report found. Run a benchmark first to rank execution configurations.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                You can still use the current Evaluation Setup configuration, but it is unranked.
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
               <FlaskConical className="w-5 h-5 text-primary" />
@@ -430,6 +859,10 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
           </div>
         </CardHeader>
         <CardContent className="space-y-6">
+          <p className="rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+            Structured fields drive reference checks. Description text is provided as additional context to the model.
+          </p>
+
           {/* Demographics Row */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -670,6 +1103,9 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
               value={caseData.caseDescription}
               onChange={(e) => updateCaseData({ caseDescription: e.target.value })}
             />
+            <p className="text-xs text-muted-foreground">
+              Description text supports LLM context only. Review structured fields before running.
+            </p>
           </div>
 
           {/* File Upload */}
@@ -685,11 +1121,20 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
             <Upload className="w-8 h-8 mx-auto text-muted-foreground mb-2" />
             <p className="text-sm font-medium text-foreground">Upload case file</p>
             <p className="text-xs text-muted-foreground mt-1">
-              Drag and drop or click to browse
+              Drag and drop a .txt file or use the file picker
             </p>
             <p className="text-xs text-muted-foreground">
-              Supports: PDF, TXT, DOCX
+              Uploaded text is added as case context. Review structured fields before running.
             </p>
+            <p className="text-xs text-muted-foreground">
+              PDF/DOCX parsing is not implemented in this MVP.
+            </p>
+            <Input
+              type="file"
+              accept=".txt"
+              className="mt-3 max-w-sm mx-auto"
+              onChange={(event) => void handleCaseFileUpload(event.target.files?.[0] ?? null)}
+            />
           </div>
         </CardContent>
       </Card>
@@ -698,7 +1143,10 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
       <div className="flex flex-col gap-3 sm:flex-row">
         <Button className="flex-1 gap-2" size="lg" onClick={runEvaluation} disabled={isRunning}>
           {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-          {isRunning ? "Running..." : "Run Evaluation"}
+          {isRunning ? "Running..." : "Run This Case"}
+        </Button>
+        <Button className="gap-2" size="lg" variant="outline" onClick={saveToCaseLibrary} disabled={isRunning}>
+          Save to Case Library
         </Button>
         <div className="sm:w-56">
           <Select
@@ -746,6 +1194,10 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
           </Select>
         </div>
       </div>
+
+      {saveCaseMessage ? (
+        <p className="text-sm text-muted-foreground">{saveCaseMessage}</p>
+      ) : null}
 
       {selectedBenchmarkCase && (
         <Card>

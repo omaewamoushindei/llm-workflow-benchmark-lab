@@ -371,6 +371,11 @@ export default function ReportsPage() {
                       ? "This report is computed from sessionStorage.latestBatchEvaluationResponse and is not persisted on the server."
                       : "Run a batch benchmark to replace these illustrative/mock values with real aggregate reporting."}
                   </p>
+                  {isRealReport ? (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Single-case execution results are not included in aggregate benchmark reports unless the case is saved to the case library and selected in a batch benchmark.
+                    </p>
+                  ) : null}
                 </div>
               </div>
             </CardContent>
@@ -443,6 +448,58 @@ export default function ReportsPage() {
               )}
             </CardContent>
           </Card>
+
+          {isRealReport ? (
+            <Card className="mb-6">
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <Info className="h-5 w-5 text-primary" />
+                  <CardTitle className="text-lg">Evaluation Rubric Used</CardTitle>
+                </div>
+                <CardDescription>
+                  Criteria settings captured from the latest batch benchmark run
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  Scores are based on deterministic PCT reference logic and rule-based output checks. This benchmark measures alignment with the provided reference logic, not real-world clinical superiority.
+                </p>
+                <div>
+                  <p className="text-sm font-medium text-foreground">Numeric criteria</p>
+                  <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
+                    {activeReportScoringCriteria.map((criterion) => (
+                      <div key={criterion.id} className="rounded-lg border border-border p-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-sm font-medium text-foreground">{criterion.name}</p>
+                          <Badge variant="secondary">Weight {criterion.weight}</Badge>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {criterion.shortDescription || criterion.description}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-foreground">Report-only criteria</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {reportOnlyCriteria.length > 0 ? (
+                      reportOnlyCriteria.map((criterion) => (
+                        <Badge key={criterion.id} variant="outline">
+                          {criterion.name}
+                        </Badge>
+                      ))
+                    ) : (
+                      <span className="text-sm text-muted-foreground">No report-only criteria enabled.</span>
+                    )}
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Report-only criteria do not affect numeric ranking unless a scoring method is implemented.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
 
           <Card className="mb-6">
             <CardHeader>

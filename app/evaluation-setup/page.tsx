@@ -227,7 +227,9 @@ const EVALUATION_SETTINGS_STORAGE_KEY = "evaluationSettings"
 const PROVIDER_API_KEYS_STORAGE_KEY = "providerApiKeys"
 const PROMPT_TEMPLATES_STORAGE_KEY = "promptTemplates"
 const EVALUATION_WORKFLOWS_STORAGE_KEY = "evaluationWorkflows"
+const CUSTOM_BENCHMARK_CASES_STORAGE_KEY = "customBenchmarkCases"
 const DEFAULT_MODEL_ONLY_PROMPT_TEMPLATE_ID = "default-baseline-pct"
+const WORKFLOW_LIBRARY_LIMIT = 25
 
 function mapLegacyPromptStrategyToTemplateId(value: unknown): string {
   if (value === "structured" || value === "json") return "default-structured-pct-json"
@@ -367,6 +369,27 @@ function parseEvaluationSettings(raw: string | null): EvaluationSettings | null 
     }
   } catch {
     return null
+  }
+}
+
+function parseCustomBenchmarkCases(raw: string | null): BenchmarkCase[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((item): item is BenchmarkCase => {
+      if (!item || typeof item !== "object") return false
+      const candidate = item as Partial<BenchmarkCase>
+      return (
+        typeof candidate.id === "string" &&
+        typeof candidate.title === "string" &&
+        (candidate.sourceType === "synthetic_algorithm_case" || candidate.sourceType === "thermo_case_adapted") &&
+        !!candidate.caseData &&
+        Array.isArray(candidate.tags)
+      )
+    })
+  } catch {
+    return []
   }
 }
 
@@ -578,7 +601,9 @@ export default function EvaluationSetupPage() {
   const [includeEnabledWorkflows, setIncludeEnabledWorkflows] = useState(true)
   const [criteriaLibrary, setCriteriaLibrary] = useState<EvaluationCriterion[]>(() => parseEvaluationCriteria(null))
   const [criteriaLoaded, setCriteriaLoaded] = useState(false)
+  const [criteriaDisplayMode, setCriteriaDisplayMode] = useState<"compact" | "detailed">("compact")
   const [expandedCriterionIds, setExpandedCriterionIds] = useState<Record<string, boolean>>({})
+  const [criteriaCopyStatus, setCriteriaCopyStatus] = useState<string | null>(null)
   const [editingCriterionId, setEditingCriterionId] = useState<string | null>(null)
   const [criterionDraft, setCriterionDraft] = useState<CriterionDraft | null>(null)
   const [numberOfCases, setNumberOfCases] = useState("10")
@@ -596,6 +621,7 @@ export default function EvaluationSetupPage() {
   const [maxConfigsPerRun, setMaxConfigsPerRun] = useState("25")
   const [showRequestPayload, setShowRequestPayload] = useState(false)
   const [expandedWorkflowIds, setExpandedWorkflowIds] = useState<Record<string, boolean>>({})
+  const [customBenchmarkCases, setCustomBenchmarkCases] = useState<BenchmarkCase[]>([])
   const [benchmarkCaseFilter, setBenchmarkCaseFilter] = useState<BenchmarkCaseFilter>("all")
   const [selectedBenchmarkCaseIds, setSelectedBenchmarkCaseIds] = useState<string[]>(
     benchmarkCases.map((benchmarkCase) => benchmarkCase.id),
@@ -618,6 +644,7 @@ export default function EvaluationSetupPage() {
     setWorkflowsLoaded(true)
     setCriteriaLibrary(parseEvaluationCriteria(window.localStorage.getItem(EVALUATION_CRITERIA_STORAGE_KEY)))
     setCriteriaLoaded(true)
+    setCustomBenchmarkCases(parseCustomBenchmarkCases(window.localStorage.getItem(CUSTOM_BENCHMARK_CASES_STORAGE_KEY)))
 
     const existing = parseEvaluationSettings(window.localStorage.getItem(EVALUATION_SETTINGS_STORAGE_KEY))
     if (!existing) return
@@ -733,7 +760,13 @@ export default function EvaluationSetupPage() {
         throw new Error(json.error || `Failed to load models with status ${response.status}`)
       }
 
-      setAvailableModels(json.models ?? [])
+      const nextModels = json.models ?? []
+      setAvailableModels(nextModels)
+      window.sessionStorage.setItem("latestProviderModelCatalog", JSON.stringify({
+        providerId: selectedProviderId,
+        models: nextModels,
+        updatedAt: new Date().toISOString(),
+      }))
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown model refresh error"
       setModelsError(message)
@@ -784,6 +817,50 @@ export default function EvaluationSetupPage() {
     }))
   }
 
+  const expandAllCriteria = () => {
+    setExpandedCriterionIds(Object.fromEntries(criteriaLibrary.map((criterion) => [criterion.id, true])))
+  }
+
+  const collapseAllCriteria = () => {
+    setExpandedCriterionIds({})
+  }
+
+  const copyEvaluationRubric = async () => {
+    const summary = criteriaLibrary.map((criterion) => ({
+      name: criterion.name,
+      weight: criterion.weight,
+      scoringMethod: criterion.scoringMethod,
+      reportOnly: criterion.isReportOnly,
+      sourceOfTruth: criterion.sourceOfTruth,
+      requiredModelFields: criterion.requiredModelFields,
+      referenceFieldsUsed: criterion.referenceFieldsUsed,
+      subcriteria: criterion.subcriteria.map((item) => ({
+        name: item.name,
+        currentlyScored: item.currentlyScored,
+        contribution: item.scoreContributionDescription,
+      })),
+      penalties: criterion.penalties.map((item) => ({
+        name: item.name,
+        severity: item.severity,
+        currentlyScored: item.currentlyScored,
+        penalty: item.penaltyDescription,
+      })),
+      caps: criterion.caps.map((item) => ({
+        name: item.name,
+        currentlyScored: item.currentlyScored,
+        cap: item.capDescription,
+      })),
+      limitations: criterion.limitations,
+    }))
+
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(summary, null, 2))
+      setCriteriaCopyStatus("Evaluation rubric copied.")
+    } catch {
+      setCriteriaCopyStatus("Could not copy rubric to clipboard.")
+    }
+  }
+
   const startEditingCriterion = (criterion: EvaluationCriterion) => {
     setEditingCriterionId(criterion.id)
     setCriterionDraft({
@@ -802,11 +879,24 @@ export default function EvaluationSetupPage() {
       id: `custom-criterion-${Date.now()}`,
       name: "New Criterion",
       description: "",
+      shortDescription: "",
+      detailedDescription: "Custom report-only criterion.",
       details: "",
       scoringMethod: "report_only",
       enabled: true,
       weight: 0,
       isDefault: false,
+      isReportOnly: true,
+      sourceOfTruth: ["User-defined report-only review"],
+      requiredModelFields: [],
+      referenceFieldsUsed: [],
+      subcriteria: [],
+      penalties: [],
+      caps: [],
+      configurableParameters: ["Custom criteria are report-only unless connected to a scoring method."],
+      limitations: ["Not currently scored."],
+      examplePass: "",
+      exampleFail: "",
       updatedAt: now,
     }
     setCriteriaLibrary((current) => [...current, criterion])
@@ -1019,11 +1109,15 @@ export default function EvaluationSetupPage() {
     setStructuredOnly(false)
   }, [availableModels.length, filteredModels.length, freeOnly, selectedProviderId, structuredOnly, textOnly])
 
+  const allBenchmarkCases = useMemo(
+    () => [...benchmarkCases, ...customBenchmarkCases],
+    [customBenchmarkCases],
+  )
   const filteredBenchmarkCases = useMemo(() => {
-    return benchmarkCases.filter((benchmarkCase) =>
+    return allBenchmarkCases.filter((benchmarkCase) =>
       benchmarkCaseMatchesFilter(benchmarkCase, benchmarkCaseFilter),
     )
-  }, [benchmarkCaseFilter])
+  }, [allBenchmarkCases, benchmarkCaseFilter])
 
   const toggleBenchmarkCase = (caseId: string) => {
     setSelectedBenchmarkCaseIds((current) =>
@@ -1316,6 +1410,7 @@ export default function EvaluationSetupPage() {
   }
 
   const duplicateWorkflow = (workflow: EvaluationWorkflow) => {
+    if (evaluationWorkflows.length >= WORKFLOW_LIBRARY_LIMIT) return
     const copy: EvaluationWorkflow = {
       ...workflow,
       id: `custom-${workflow.id}-${Date.now()}`,
@@ -1323,30 +1418,33 @@ export default function EvaluationSetupPage() {
       isDefault: false,
       steps: workflow.steps.map((step) => ({ ...step, id: `${step.id}-${Date.now()}` })),
     }
-    setEvaluationWorkflows((current) => [...current, copy].slice(0, 5))
-    setSelectedWorkflowIds((current) => [...current, copy.id])
+    setEvaluationWorkflows((current) => [...current, copy])
+    setExpandedWorkflowIds((current) => ({ ...current, [copy.id]: true }))
   }
 
   const addWorkflow = () => {
+    if (evaluationWorkflows.length >= WORKFLOW_LIBRARY_LIMIT) return
     const modelId = getDefaultModelId()
+    const timestamp = Date.now()
     const workflow: EvaluationWorkflow = {
-      id: `custom-workflow-${Date.now()}`,
+      id: `custom-workflow-${timestamp}`,
       name: "New Workflow",
       description: "",
       isDefault: false,
       steps: [
         {
-          id: `custom-step-${Date.now()}`,
+          id: `custom-step-${timestamp}`,
           name: "Step 1",
           stepType: "llm_call",
-          modelId,
-          promptTemplateId: promptTemplates[0]?.id ?? "default-structured-pct-json",
+          modelId: modelId ?? "",
+          promptTemplateId: promptTemplates[0]?.id ?? "",
           inputSource: "case_data",
         },
       ],
     }
-    setEvaluationWorkflows((current) => [...current, workflow].slice(0, 5))
-    setSelectedWorkflowIds((current) => [...current, workflow.id])
+    setEvaluationWorkflows((current) => [...current, workflow])
+    setSelectedWorkflowIds((current) => current.filter((id) => id !== workflow.id))
+    setExpandedWorkflowIds((current) => ({ ...current, [workflow.id]: true }))
   }
 
   const deleteWorkflow = (workflowId: string) => {
@@ -1455,7 +1553,7 @@ export default function EvaluationSetupPage() {
     compactPromptMode,
     continueOnError,
     stopAfterFailureRatePercent: readBoundedNumber(stopAfterFailureRatePercent, 100, 100),
-    maxCasesPerRun: readBoundedNumber(numberOfCases, selectedBenchmarkCaseIds.length || benchmarkCases.length, 500),
+    maxCasesPerRun: readBoundedNumber(numberOfCases, selectedBenchmarkCaseIds.length || allBenchmarkCases.length, 500),
     maxConfigsPerRun: readBoundedNumber(maxConfigsPerRun, 25, 100),
   })
 
@@ -1552,9 +1650,12 @@ export default function EvaluationSetupPage() {
         getPromptTemplateForRun(defaultPromptTemplateId)
       const apiKey = providerApiKeys[providerId]?.key
       const runControls = buildRunControls()
+      if (benchmarkConfigs.length > runControls.maxConfigsPerRun) {
+        throw new Error("Too many benchmark configurations selected. Disable some workflows/configs or increase maxConfigsPerRun.")
+      }
       const configsForProgress = benchmarkConfigs.slice(0, runControls.maxConfigsPerRun)
       const caseCountForProgress = Math.min(
-        selectedBenchmarkCaseIds.length || benchmarkCases.length,
+        selectedBenchmarkCaseIds.length || allBenchmarkCases.length,
         runControls.maxCasesPerRun,
       )
       const estimatedTotalCalls =
@@ -1562,7 +1663,7 @@ export default function EvaluationSetupPage() {
       const estimatedTotalSteps =
         configsForProgress.reduce((sum, config) => sum + countConfigSteps(config), 0) * caseCountForProgress
       const firstSelectedCase =
-        benchmarkCases.find((benchmarkCase) => selectedBenchmarkCaseIds.includes(benchmarkCase.id)) ?? benchmarkCases[0]
+        allBenchmarkCases.find((benchmarkCase) => selectedBenchmarkCaseIds.includes(benchmarkCase.id)) ?? allBenchmarkCases[0]
 
       setBenchmarkProgress({
         isRunning: true,
@@ -1687,12 +1788,14 @@ export default function EvaluationSetupPage() {
   const workflowConfigCount = includeEnabledWorkflows ? enabledSummaryWorkflows.length : 0
   const totalBenchmarkConfigCount = modelOnlyConfigCount + workflowConfigCount
   const summaryWorkflowsForRun = hydrateWorkflowsForRun(includeEnabledWorkflows ? enabledSummaryWorkflows : [])
-  const summaryBenchmarkConfigs = buildBenchmarkConfigsForRun(summaryWorkflowsForRun).slice(
-    0,
-    summaryRunControls.maxConfigsPerRun,
-  )
+  const allSummaryBenchmarkConfigs = buildBenchmarkConfigsForRun(summaryWorkflowsForRun)
+  const summaryBenchmarkConfigs = allSummaryBenchmarkConfigs.slice(0, summaryRunControls.maxConfigsPerRun)
+  const tooManyBenchmarkConfigs = allSummaryBenchmarkConfigs.length > summaryRunControls.maxConfigsPerRun
+  const runValidationMessage = tooManyBenchmarkConfigs
+    ? "Too many benchmark configurations selected. Disable some workflows/configs or increase maxConfigsPerRun."
+    : null
   const summaryCaseCount = Math.min(
-    selectedBenchmarkCaseIds.length || benchmarkCases.length,
+    selectedBenchmarkCaseIds.length || allBenchmarkCases.length,
     summaryRunControls.maxCasesPerRun,
   )
   const summaryEstimatedCalls =
@@ -1735,6 +1838,18 @@ export default function EvaluationSetupPage() {
       : activeTab === "workflows" || activeTab === "summary"
         ? "max-w-5xl mx-auto space-y-6 scroll-mt-24"
         : "max-w-3xl mx-auto space-y-6 scroll-mt-24"
+
+  const renderRubricList = (items: string[]) => (
+    <ul className="mt-2 list-disc space-y-1 pl-5">
+      {items.length > 0 ? items.map((item, index) => <li key={`${item}-${index}`}>{item}</li>) : <li>None specified.</li>}
+    </ul>
+  )
+
+  const renderScoredBadge = (currentlyScored: boolean) => (
+    <Badge variant={currentlyScored ? "secondary" : "outline"}>
+      {currentlyScored ? "Currently scored" : "Not currently scored"}
+    </Badge>
+  )
 
   useEffect(() => {
     if (!benchmarkProgress.isRunning || !benchmarkProgress.startedAt) return
@@ -1907,11 +2022,15 @@ export default function EvaluationSetupPage() {
 
                   <div className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-3">
                     <p className="text-sm text-warning-foreground">
-                      Paid models may fail if your OpenRouter account has no credits. Use Free Only or add credits.
+                      {selectedProviderId === "openrouter"
+                        ? "Paid models may fail if your OpenRouter account has no credits. Use Free Only or add credits."
+                        : "Groq free/on-demand tiers may rate-limit large benchmark runs. Use fewer cases/configs or increase run delays."}
                     </p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Free models may still fail because of provider availability or rate limits. Use Test Selected Models before running evaluation.
-                    </p>
+                    {selectedProviderId === "openrouter" ? (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Free models may still fail because of provider availability or rate limits. Use Test Selected Models before running evaluation.
+                      </p>
+                    ) : null}
                   </div>
 
                   <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -2057,12 +2176,14 @@ export default function EvaluationSetupPage() {
 
                   {!modelsLoading && availableModels.length === 0 && !modelsError ? (
                     <p className="text-sm text-muted-foreground">
-                      No models loaded yet. Refresh models to fetch the OpenRouter catalog.
+                      No models loaded yet. Refresh models to fetch the provider catalog.
                     </p>
                   ) : null}
                   {!modelsLoading && availableModels.length > 0 && filteredModels.length === 0 ? (
                     <p className="text-sm text-muted-foreground">
-                      No models match the current filters.
+                      {modelSearch.trim()
+                        ? "No models match the current search and filters."
+                        : "No models match the current filters."}
                     </p>
                   ) : null}
                 </CardContent>
@@ -2074,11 +2195,11 @@ export default function EvaluationSetupPage() {
               <Card id="workflow-builder" className="scroll-mt-24">
                 <CardHeader>
                   <CardTitle className="text-base">Workflow Builder</CardTitle>
-                  <CardDescription>Create and compare 1-5 linear evaluation workflows</CardDescription>
+                  <CardDescription>Create reusable linear workflows. Run limits are enforced separately in Summary.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <p className="text-xs text-muted-foreground">
-                    Each enabled workflow becomes one benchmark configuration.
+                    Each enabled workflow becomes one benchmark configuration when running a benchmark.
                   </p>
                   <div className="flex flex-wrap items-center gap-2">
                     <Button
@@ -2086,12 +2207,17 @@ export default function EvaluationSetupPage() {
                       variant="outline"
                       size="sm"
                       onClick={addWorkflow}
-                      disabled={Boolean(!hasMounted || evaluationWorkflows.length >= 5)}
+                      disabled={Boolean(!hasMounted || evaluationWorkflows.length >= WORKFLOW_LIBRARY_LIMIT)}
                     >
                       Add Workflow
                     </Button>
                     <Badge variant="secondary">{selectedWorkflowIds.length} enabled</Badge>
                   </div>
+                  {evaluationWorkflows.length >= WORKFLOW_LIBRARY_LIMIT ? (
+                    <p className="text-xs text-destructive">
+                      Workflow library limit reached ({WORKFLOW_LIBRARY_LIMIT}). Delete a custom workflow before adding more.
+                    </p>
+                  ) : null}
 
                   <div className="space-y-3">
                     {evaluationWorkflows.map((workflow) => {
@@ -2127,7 +2253,7 @@ export default function EvaluationSetupPage() {
                               variant="outline"
                               size="sm"
                               onClick={() => duplicateWorkflow(workflow)}
-                              disabled={Boolean(!hasMounted || evaluationWorkflows.length >= 5)}
+                              disabled={Boolean(!hasMounted || evaluationWorkflows.length >= WORKFLOW_LIBRARY_LIMIT)}
                             >
                               Duplicate
                             </Button>
@@ -2854,8 +2980,41 @@ export default function EvaluationSetupPage() {
                   </div>
 
                   <p className="text-xs text-muted-foreground">
-                    Custom criteria are report-only unless a scoring method is implemented.
+                    Custom criteria are report-only unless connected to a scoring method.
                   </p>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      variant={criteriaDisplayMode === "compact" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setCriteriaDisplayMode("compact")}
+                      disabled={Boolean(!hasMounted)}
+                    >
+                      Compact view
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={criteriaDisplayMode === "detailed" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setCriteriaDisplayMode("detailed")}
+                      disabled={Boolean(!hasMounted)}
+                    >
+                      Detailed view
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={expandAllCriteria} disabled={Boolean(!hasMounted)}>
+                      Expand all details
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={collapseAllCriteria} disabled={Boolean(!hasMounted)}>
+                      Collapse all details
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={copyEvaluationRubric} disabled={Boolean(!hasMounted)}>
+                      Copy Evaluation Rubric
+                    </Button>
+                  </div>
+                  {criteriaCopyStatus ? (
+                    <p className="text-xs text-muted-foreground">{criteriaCopyStatus}</p>
+                  ) : null}
 
                   <div className="space-y-3">
                     {criteriaLibrary.map((criterion) => {
@@ -2867,13 +3026,14 @@ export default function EvaluationSetupPage() {
                             <div className="space-y-2">
                               <div className="flex flex-wrap items-center gap-2">
                                 <p className="font-medium text-sm text-foreground">{criterion.name}</p>
-                                <Badge variant="outline">{scoringMethodLabels[criterion.scoringMethod]}</Badge>
-                                <Badge variant={criterion.isDefault ? "secondary" : "outline"}>
-                                  {criterion.isDefault ? "Default" : "Custom"}
-                                </Badge>
-                                <Badge variant="outline">Weight {criterion.weight}</Badge>
+                                <span className="text-xs text-muted-foreground">
+                                  {scoringMethodLabels[criterion.scoringMethod]} · {criterion.isDefault ? "Default" : "Custom"} ·{" "}
+                                  {criterion.isReportOnly ? "Report-only" : "Numeric"} · Weight {criterion.weight}
+                                </span>
                               </div>
-                              <p className="text-xs text-muted-foreground">{criterion.description}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {criterion.shortDescription || criterion.description}
+                              </p>
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
                               <Switch checked={criterion.enabled} onCheckedChange={() => toggleCriterionEnabled(criterion.id)} />
@@ -2919,9 +3079,125 @@ export default function EvaluationSetupPage() {
                             </div>
                           </div>
 
-                          {isExpanded ? (
+                          {isExpanded && criteriaDisplayMode === "detailed" ? (
+                            <div className="mt-3 space-y-4 rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">
+                              <div>
+                                <p className="font-medium text-foreground">Overview</p>
+                                <p className="mt-1">{criterion.detailedDescription || criterion.details || criterion.description}</p>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  <Badge variant="outline">{scoringMethodLabels[criterion.scoringMethod]}</Badge>
+                                  <Badge variant={criterion.isReportOnly ? "outline" : "secondary"}>
+                                    {criterion.isReportOnly ? "Report-only" : "Numeric scoring"}
+                                  </Badge>
+                                  <Badge variant="outline">Weight {criterion.weight}</Badge>
+                                </div>
+                                {criterion.isDefault && !criterion.isReportOnly ? (
+                                  <p className="mt-2">
+                                    Formula is fixed in this MVP. You can customize the weight, but not the scoring function.
+                                  </p>
+                                ) : null}
+                                {!criterion.isDefault ? (
+                                  <p className="mt-2">
+                                    Custom criteria are report-only unless connected to a scoring method.
+                                  </p>
+                                ) : null}
+                              </div>
+
+                              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                <div>
+                                  <p className="font-medium text-foreground">Source of Truth</p>
+                                  {renderRubricList(criterion.sourceOfTruth)}
+                                </div>
+                                <div>
+                                  <p className="font-medium text-foreground">Required Model Fields</p>
+                                  {renderRubricList(criterion.requiredModelFields)}
+                                </div>
+                                <div>
+                                  <p className="font-medium text-foreground">Reference Fields Used</p>
+                                  {renderRubricList(criterion.referenceFieldsUsed)}
+                                </div>
+                                <div>
+                                  <p className="font-medium text-foreground">Configurable Parameters</p>
+                                  {renderRubricList(criterion.configurableParameters)}
+                                </div>
+                              </div>
+
+                              <div>
+                                <p className="font-medium text-foreground">Subcriteria</p>
+                                <div className="mt-2 space-y-2">
+                                  {criterion.subcriteria.length > 0 ? criterion.subcriteria.map((item) => (
+                                    <div key={item.id} className="rounded-md border border-border bg-background/60 p-2">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <p className="font-medium text-foreground">{item.name}</p>
+                                        {renderScoredBadge(item.currentlyScored)}
+                                      </div>
+                                      <p className="mt-1">{item.description}</p>
+                                      <p className="mt-1">Evidence: {item.expectedEvidence}</p>
+                                      <p className="mt-1">Contribution: {item.scoreContributionDescription}</p>
+                                    </div>
+                                  )) : <p className="mt-2">No subcriteria specified.</p>}
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                <div>
+                                  <p className="font-medium text-foreground">Penalties</p>
+                                  <div className="mt-2 space-y-2">
+                                    {criterion.penalties.length > 0 ? criterion.penalties.map((item) => (
+                                      <div key={item.id} className="rounded-md border border-border bg-background/60 p-2">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <p className="font-medium text-foreground">{item.name}</p>
+                                          <Badge variant="outline">{item.severity}</Badge>
+                                          {renderScoredBadge(item.currentlyScored)}
+                                        </div>
+                                        <p className="mt-1">{item.description}</p>
+                                        <p className="mt-1">Penalty: {item.penaltyDescription}</p>
+                                      </div>
+                                    )) : <p className="mt-2">No penalty rules specified.</p>}
+                                  </div>
+                                </div>
+                                <div>
+                                  <p className="font-medium text-foreground">Caps</p>
+                                  <div className="mt-2 space-y-2">
+                                    {criterion.caps.length > 0 ? criterion.caps.map((item) => (
+                                      <div key={item.id} className="rounded-md border border-border bg-background/60 p-2">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <p className="font-medium text-foreground">{item.name}</p>
+                                          {renderScoredBadge(item.currentlyScored)}
+                                        </div>
+                                        <p className="mt-1">{item.description}</p>
+                                        <p className="mt-1">Cap: {item.capDescription}</p>
+                                      </div>
+                                    )) : <p className="mt-2">No cap rules specified.</p>}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                <div>
+                                  <p className="font-medium text-foreground">Example Pass</p>
+                                  <p className="mt-1">{criterion.examplePass || "No example provided."}</p>
+                                </div>
+                                <div>
+                                  <p className="font-medium text-foreground">Example Fail</p>
+                                  <p className="mt-1">{criterion.exampleFail || "No example provided."}</p>
+                                </div>
+                              </div>
+
+                              <div>
+                                <p className="font-medium text-foreground">Limitations</p>
+                                {renderRubricList(criterion.limitations)}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {isExpanded && criteriaDisplayMode === "compact" ? (
                             <div className="mt-3 rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">
-                              {criterion.details || "No details provided."}
+                              <p className="font-medium text-foreground">Overview</p>
+                              <p className="mt-1">{criterion.shortDescription || criterion.description}</p>
+                              <p className="mt-2">
+                                Switch to Detailed view to inspect source fields, subcriteria, penalties, caps, examples, and limitations.
+                              </p>
                             </div>
                           ) : null}
 
@@ -3271,7 +3547,7 @@ export default function EvaluationSetupPage() {
                 </div>
                 <div className="rounded-lg border border-border p-3">
                   <p className="text-xs text-muted-foreground">Total benchmark configs</p>
-                  <p className="text-sm font-medium">{summaryBenchmarkConfigs.length}</p>
+                  <p className="text-sm font-medium">{allSummaryBenchmarkConfigs.length}</p>
                 </div>
                 <div className="rounded-lg border border-border p-3">
                   <p className="text-xs text-muted-foreground">Estimated LLM calls</p>
@@ -3290,8 +3566,8 @@ export default function EvaluationSetupPage() {
               <div className="mb-6 rounded-lg border border-border p-3">
                 <p className="mb-2 text-xs font-medium text-muted-foreground">Config list</p>
                 <div className="flex flex-wrap gap-2">
-                  {summaryBenchmarkConfigs.length > 0 ? (
-                    summaryBenchmarkConfigs.map((config) => (
+                  {allSummaryBenchmarkConfigs.length > 0 ? (
+                    allSummaryBenchmarkConfigs.map((config) => (
                       <Badge key={config.configId} variant={config.configType === "workflow" ? "secondary" : "outline"}>
                         {config.label}
                       </Badge>
@@ -3354,7 +3630,7 @@ export default function EvaluationSetupPage() {
                     </div>
                     <div className="rounded-md bg-muted/40 p-3">
                       <p className="text-xs text-muted-foreground">Benchmark configs</p>
-                      <p className="text-sm font-medium">{summaryBenchmarkConfigs.length}</p>
+                      <p className="text-sm font-medium">{allSummaryBenchmarkConfigs.length}</p>
                     </div>
                     <div className="rounded-md bg-muted/40 p-3">
                       <p className="text-xs text-muted-foreground">Cases</p>
@@ -3510,12 +3786,21 @@ export default function EvaluationSetupPage() {
                     <p className="text-xs text-muted-foreground">
                       Active scoring weight: {activeScoringWeight}. Weights are normalized during ranking.
                     </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setActiveTab("providers")}
+                      disabled={Boolean(!hasMounted)}
+                    >
+                      View full rubric
+                    </Button>
                   </div>
                 </div>
                 <div>
                   <p className="text-xs font-medium text-muted-foreground mb-2">Run Settings</p>
                   <div className="flex flex-wrap gap-2">
-                    <Badge variant="outline">{selectedBenchmarkCaseIds.length || benchmarkCases.length} benchmark cases</Badge>
+                    <Badge variant="outline">{selectedBenchmarkCaseIds.length || allBenchmarkCases.length} benchmark cases</Badge>
                     {batchRun && <Badge variant="outline">Batch</Badge>}
                     <Badge variant="outline">{summaryDelayMs} ms delay</Badge>
                     <Badge variant="outline">{summaryRunControls.delayBetweenWorkflowStepsMs} ms step delay</Badge>
@@ -3528,8 +3813,14 @@ export default function EvaluationSetupPage() {
                 </div>
               </div>
               
+              {runValidationMessage ? (
+                <div className="mt-6 border-t border-border pt-4">
+                  <p className="text-sm text-destructive">{runValidationMessage}</p>
+                </div>
+              ) : null}
+
               <div className="flex gap-3 mt-6 pt-4 border-t border-border">
-                <Button className="gap-2" onClick={runBenchmark} disabled={Boolean(!hasMounted || benchmarkRunning)}>
+                <Button className="gap-2" onClick={runBenchmark} disabled={Boolean(!hasMounted || benchmarkRunning || runValidationMessage)}>
                   {benchmarkRunning ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
                   {benchmarkRunning ? "Running Benchmark..." : "Run Benchmark"}
                 </Button>
