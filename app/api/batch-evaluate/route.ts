@@ -17,6 +17,7 @@ import type {
   PromptTemplate,
   ReferenceChecks,
   ReferenceDecision,
+  RunControls,
   WorkflowType,
   WorkflowStep,
 } from '@/lib/types'
@@ -53,8 +54,7 @@ type BatchEvaluateRequest = {
   defaultPromptTemplateText?: string
   caseIds: string[]
   useMock: boolean
-  delayMs: number
-  maxRetries: number
+  runControls: RunControls
 }
 
 type BatchCaseResult = {
@@ -73,6 +73,18 @@ const PROMPT_STRATEGIES: PromptStrategyId[] = ['baseline', 'structured', 'verifi
 const DEFAULT_DELAY_MS = 2000
 const DEFAULT_MAX_RETRIES = 2
 const RETRY_BACKOFF_MS = [2000, 5000, 10000]
+const DEFAULT_RUN_CONTROLS: RunControls = {
+  delayBetweenCallsMs: DEFAULT_DELAY_MS,
+  delayBetweenWorkflowStepsMs: DEFAULT_DELAY_MS,
+  maxRetries: DEFAULT_MAX_RETRIES,
+  retryBackoffMode: 'provider_hint',
+  maxOutputTokens: 600,
+  compactPromptMode: true,
+  continueOnError: true,
+  stopAfterFailureRatePercent: 100,
+  maxCasesPerRun: 50,
+  maxConfigsPerRun: 25,
+}
 
 const OPENROUTER_FALLBACK_CONFIGS: ProviderEvaluationConfig[] = [
   {
@@ -147,6 +159,41 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function parseNumber(value: unknown, fallback: number, max: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
   return Math.min(Math.max(Math.round(value), 0), max)
+}
+
+function parseBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback
+}
+
+function parseRunControls(body: Record<string, unknown>): RunControls {
+  const raw = isRecord(body.runControls) ? body.runControls : {}
+  const legacyDelayMs = parseNumber(body.delayMs, DEFAULT_RUN_CONTROLS.delayBetweenCallsMs, 60000)
+  const legacyMaxRetries = parseNumber(body.maxRetries, DEFAULT_RUN_CONTROLS.maxRetries, 5)
+  const retryBackoffMode =
+    raw.retryBackoffMode === 'exponential' || raw.retryBackoffMode === 'provider_hint'
+      ? raw.retryBackoffMode
+      : DEFAULT_RUN_CONTROLS.retryBackoffMode
+
+  return {
+    delayBetweenCallsMs: parseNumber(raw.delayBetweenCallsMs, legacyDelayMs, 60000),
+    delayBetweenWorkflowStepsMs: parseNumber(
+      raw.delayBetweenWorkflowStepsMs,
+      DEFAULT_RUN_CONTROLS.delayBetweenWorkflowStepsMs,
+      60000,
+    ),
+    maxRetries: parseNumber(raw.maxRetries, legacyMaxRetries, 5),
+    retryBackoffMode,
+    maxOutputTokens: parseNumber(raw.maxOutputTokens, DEFAULT_RUN_CONTROLS.maxOutputTokens, 2000),
+    compactPromptMode: parseBoolean(raw.compactPromptMode, DEFAULT_RUN_CONTROLS.compactPromptMode),
+    continueOnError: parseBoolean(raw.continueOnError, DEFAULT_RUN_CONTROLS.continueOnError),
+    stopAfterFailureRatePercent: parseNumber(
+      raw.stopAfterFailureRatePercent,
+      DEFAULT_RUN_CONTROLS.stopAfterFailureRatePercent,
+      100,
+    ),
+    maxCasesPerRun: parseNumber(raw.maxCasesPerRun, DEFAULT_RUN_CONTROLS.maxCasesPerRun, 500),
+    maxConfigsPerRun: parseNumber(raw.maxConfigsPerRun, DEFAULT_RUN_CONTROLS.maxConfigsPerRun, 100),
+  }
 }
 
 function parseWorkflowType(value: unknown): WorkflowType {
@@ -424,8 +471,7 @@ function parseRequestBody(body: unknown): BatchEvaluateRequest {
       defaultPromptTemplateText: undefined,
       caseIds: [],
       useMock: false,
-      delayMs: DEFAULT_DELAY_MS,
-      maxRetries: DEFAULT_MAX_RETRIES,
+      runControls: DEFAULT_RUN_CONTROLS,
     }
   }
 
@@ -451,8 +497,7 @@ function parseRequestBody(body: unknown): BatchEvaluateRequest {
       ? body.caseIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
       : [],
     useMock: body.useMock === true,
-    delayMs: parseNumber(body.delayMs, DEFAULT_DELAY_MS, 60000),
-    maxRetries: parseNumber(body.maxRetries, DEFAULT_MAX_RETRIES, 5),
+    runControls: parseRunControls(body),
   }
 }
 
@@ -474,8 +519,31 @@ class RetryTrackingError extends Error {
   }
 }
 
+class WorkflowStepExecutionError extends Error {
+  failedStepName: string
+  failedStepIndex: number
+  retryCount: number
+
+  constructor(error: unknown, failedStepName: string, failedStepIndex: number, retryCount: number) {
+    super(getErrorMessage(error))
+    this.name = 'WorkflowStepExecutionError'
+    this.failedStepName = failedStepName
+    this.failedStepIndex = failedStepIndex
+    this.retryCount = retryCount
+  }
+}
+
 function getRetryCount(error: unknown): number {
+  if (error instanceof WorkflowStepExecutionError) return error.retryCount
   return error instanceof RetryTrackingError ? error.retryCount : 0
+}
+
+function getFailedStepName(error: unknown): string | undefined {
+  return error instanceof WorkflowStepExecutionError ? error.failedStepName : undefined
+}
+
+function getFailedStepIndex(error: unknown): number | undefined {
+  return error instanceof WorkflowStepExecutionError ? error.failedStepIndex : undefined
 }
 
 function isRateLimitError(error: unknown): boolean {
@@ -503,10 +571,11 @@ function parseProviderRetryDelayMs(message: string): number | null {
 
 async function callWithRetry<T>(
   fn: () => Promise<T>,
-  options?: { maxRetries?: number; baseDelayMs?: number },
+  options?: { maxRetries?: number; baseDelayMs?: number; retryBackoffMode?: RunControls['retryBackoffMode'] },
 ): Promise<T> {
   const maxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES
   const baseDelayMs = options?.baseDelayMs ?? DEFAULT_DELAY_MS
+  const retryBackoffMode = options?.retryBackoffMode ?? 'provider_hint'
   let retryCount = 0
 
   while (true) {
@@ -519,7 +588,7 @@ async function callWithRetry<T>(
 
       const message = getErrorMessage(error)
       const retryDelayMs =
-        parseProviderRetryDelayMs(message) ??
+        (retryBackoffMode === 'provider_hint' ? parseProviderRetryDelayMs(message) : null) ??
         (retryCount === 0 ? baseDelayMs : RETRY_BACKOFF_MS[Math.min(retryCount, RETRY_BACKOFF_MS.length - 1)])
 
       retryCount += 1
@@ -846,10 +915,9 @@ async function executeWorkflow(args: {
   caseData: ClinicalCase
   referenceDecision: ReferenceDecision
   referenceChecks: ReferenceChecks
-  maxRetries: number
-  delayMs: number
+  runControls: RunControls
 }): Promise<{ finalRawOutput: string; rawOutput: string }> {
-  const { providerId, apiKey, config, caseData, referenceDecision, referenceChecks, maxRetries, delayMs } = args
+  const { providerId, apiKey, config, caseData, referenceDecision, referenceChecks, runControls } = args
   const workflow = config.workflow
   if (!workflow) {
     throw new Error('Workflow config missing workflow definition')
@@ -858,8 +926,10 @@ async function executeWorkflow(args: {
   let previousOutput = ''
   const stepOutputs: Array<{ stepId: string; stepName: string; stepType: string; output: string }> = []
 
-  for (const step of workflow.steps) {
-    if (stepOutputs.length > 0 && delayMs > 0) await sleep(delayMs)
+  for (const [index, step] of workflow.steps.entries()) {
+    if (stepOutputs.length > 0 && runControls.delayBetweenWorkflowStepsMs > 0) {
+      await sleep(runControls.delayBetweenWorkflowStepsMs)
+    }
 
     if (step.stepType === 'deterministic_precheck') {
       previousOutput = formatReferenceContext(referenceDecision, referenceChecks)
@@ -873,22 +943,30 @@ async function executeWorkflow(args: {
       continue
     }
 
-    previousOutput = await callWithRetry(
-      () =>
-        callProviderChatCompletion(
-          config.providerId ?? providerId,
-          apiKey,
-          step.modelId as string,
-          [
-            {
-              role: 'user',
-              content: buildStepPrompt({ step, caseData, referenceDecision, referenceChecks, previousOutput }),
-            },
-          ],
-          { temperature: 0.1, max_tokens: 600 },
-        ),
-      { maxRetries, baseDelayMs: DEFAULT_DELAY_MS },
-    )
+    try {
+      previousOutput = await callWithRetry(
+        () =>
+          callProviderChatCompletion(
+            config.providerId ?? providerId,
+            apiKey,
+            step.modelId as string,
+            [
+              {
+                role: 'user',
+                content: buildStepPrompt({ step, caseData, referenceDecision, referenceChecks, previousOutput }),
+              },
+            ],
+            { temperature: 0.1, max_tokens: runControls.maxOutputTokens },
+          ),
+        {
+          maxRetries: runControls.maxRetries,
+          baseDelayMs: runControls.delayBetweenCallsMs,
+          retryBackoffMode: runControls.retryBackoffMode,
+        },
+      )
+    } catch (error) {
+      throw new WorkflowStepExecutionError(error, step.name, index, getRetryCount(error))
+    }
     stepOutputs.push({ stepId: step.id, stepName: step.name, stepType: step.stepType, output: previousOutput })
   }
 
@@ -905,10 +983,9 @@ async function buildLiveResult(args: {
   caseData: ClinicalCase
   referenceDecision: ReferenceDecision
   referenceChecks: ReferenceChecks
-  maxRetries: number
-  delayMs: number
+  runControls: RunControls
 }): Promise<LlmEvaluationResult> {
-  const { providerId, apiKey, config, caseData, referenceDecision, referenceChecks, maxRetries, delayMs } = args
+  const { providerId, apiKey, config, caseData, referenceDecision, referenceChecks, runControls } = args
   const promptStrategy = getPromptStrategyLabel(config.promptStrategy)
   const primaryModelId = getPrimaryModelId(config)
 
@@ -938,8 +1015,7 @@ async function buildLiveResult(args: {
         caseData,
         referenceDecision,
         referenceChecks,
-        maxRetries,
-        delayMs,
+        runControls,
       })
     : null
 
@@ -965,14 +1041,18 @@ async function buildLiveResult(args: {
                   : buildEvaluationPrompt(caseData, config.promptStrategy, config.promptTemplateText),
             },
           ],
-          { temperature: 0.1, max_tokens: 600 },
+          { temperature: 0.1, max_tokens: runControls.maxOutputTokens },
         ),
-      { maxRetries, baseDelayMs: DEFAULT_DELAY_MS },
+      {
+        maxRetries: runControls.maxRetries,
+        baseDelayMs: runControls.delayBetweenCallsMs,
+        retryBackoffMode: runControls.retryBackoffMode,
+      },
     ))
 
   let finalRawOutput = rawOutput
   if (!config.workflow && config.workflowType === 'verification') {
-    if (delayMs > 0) await sleep(delayMs)
+    if (runControls.delayBetweenWorkflowStepsMs > 0) await sleep(runControls.delayBetweenWorkflowStepsMs)
     finalRawOutput = await callWithRetry(
       () =>
         callProviderChatCompletion(
@@ -980,9 +1060,13 @@ async function buildLiveResult(args: {
           apiKey,
           getVerifierModelId(config),
               [{ role: 'user', content: buildVerifierPrompt(caseData, rawOutput, config.promptTemplateText) }],
-          { temperature: 0.1, max_tokens: 600 },
+          { temperature: 0.1, max_tokens: runControls.maxOutputTokens },
         ),
-      { maxRetries, baseDelayMs: DEFAULT_DELAY_MS },
+      {
+        maxRetries: runControls.maxRetries,
+        baseDelayMs: runControls.delayBetweenCallsMs,
+        retryBackoffMode: runControls.retryBackoffMode,
+      },
     )
   }
 
@@ -1051,19 +1135,18 @@ async function evaluateCase(args: {
   apiKey: string | null
   configs: ProviderEvaluationConfig[]
   useMock: boolean
-  delayMs: number
-  maxRetries: number
+  runControls: RunControls
   delayBeforeFirstModel: boolean
 }): Promise<BatchCaseResult> {
-  const { benchmarkCase, providerId, apiKey, configs, useMock, delayMs, maxRetries, delayBeforeFirstModel } = args
+  const { benchmarkCase, providerId, apiKey, configs, useMock, runControls, delayBeforeFirstModel } = args
   const referenceDecision = evaluateReferenceDecision(benchmarkCase.caseData)
   const referenceChecks = deriveReferenceChecks(benchmarkCase.caseData, referenceDecision)
 
   const results: LlmEvaluationResult[] = []
 
   for (const config of configs) {
-    if ((results.length > 0 || delayBeforeFirstModel) && delayMs > 0) {
-      await sleep(delayMs)
+    if ((results.length > 0 || delayBeforeFirstModel) && runControls.delayBetweenCallsMs > 0) {
+      await sleep(runControls.delayBetweenCallsMs)
     }
 
     try {
@@ -1076,16 +1159,14 @@ async function evaluateCase(args: {
             caseData: benchmarkCase.caseData,
             referenceDecision,
             referenceChecks,
-            maxRetries,
-            delayMs,
+            runControls,
           })
 
       results.push(result)
     } catch (error) {
       const failureReason = classifyModelFailure(error)
       const retryCount = getRetryCount(error)
-
-      results.push({
+      const errorResult: LlmEvaluationResult = {
         configId: config.configId,
         modelLabel: config.modelLabel,
         configLabel: config.label,
@@ -1099,7 +1180,14 @@ async function evaluateCase(args: {
         error: getReadableModelError(error, failureReason),
         failureReason,
         retryCount,
-      })
+        failedStepName: getFailedStepName(error),
+        failedStepIndex: getFailedStepIndex(error),
+      }
+
+      results.push(errorResult)
+      if (!runControls.continueOnError) {
+        break
+      }
     }
   }
 
@@ -1140,6 +1228,23 @@ function buildAggregate(caseResults: BatchCaseResult[]) {
   }
 }
 
+function countEstimatedCalls(configs: ProviderEvaluationConfig[], caseCount: number): number {
+  const callsPerCase = configs.reduce((sum, config) => {
+    if (config.workflow) {
+      return sum + config.workflow.steps.filter((step) => step.stepType !== 'deterministic_precheck' && !!step.modelId).length
+    }
+    return sum + (config.workflowType === 'verification' ? 2 : 1)
+  }, 0)
+
+  return callsPerCase * caseCount
+}
+
+function getEstimatedRiskLevel(estimatedCalls: number, runControls: RunControls): 'low' | 'medium' | 'high' {
+  if (estimatedCalls > 80 || runControls.delayBetweenCallsMs < 1000) return 'high'
+  if (estimatedCalls > 30 || runControls.delayBetweenCallsMs < 2000) return 'medium'
+  return 'low'
+}
+
 export async function POST(request: Request) {
   let input: BatchEvaluateRequest
 
@@ -1149,12 +1254,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  const selectedCases =
+  const allSelectedCases =
     input.caseIds.length > 0
       ? benchmarkCases.filter((benchmarkCase) => input.caseIds.includes(benchmarkCase.id))
       : benchmarkCases
+  const selectedCases = allSelectedCases.slice(0, input.runControls.maxCasesPerRun)
 
-  const configs =
+  const allConfigs =
     input.benchmarkConfigs.length > 0
       ? input.benchmarkConfigs
     : input.evaluationWorkflows.length > 0
@@ -1170,6 +1276,13 @@ export async function POST(request: Request) {
           input.defaultPromptTemplateText,
           input.defaultPromptTemplateId,
         )
+  const configs = allConfigs.slice(0, input.runControls.maxConfigsPerRun)
+  const selectedModelCount = new Set(input.selectedModelIds.map((id) => id.trim()).filter(Boolean)).size
+  const workflowConfigCount = configs.filter((config) => config.configType === 'workflow').length
+  const modelOnlyConfigCount = configs.filter((config) => config.configType !== 'workflow').length
+  const totalConfigCount = configs.length
+  const estimatedCalls = countEstimatedCalls(configs, selectedCases.length)
+  const estimatedRiskLevel = getEstimatedRiskLevel(estimatedCalls, input.runControls)
   const caseResults: BatchCaseResult[] = []
 
   for (const benchmarkCase of selectedCases) {
@@ -1179,11 +1292,20 @@ export async function POST(request: Request) {
       apiKey: input.apiKey,
       configs,
       useMock: input.useMock,
-      delayMs: input.delayMs,
-      maxRetries: input.maxRetries,
+      runControls: input.runControls,
       delayBeforeFirstModel: caseResults.length > 0,
     })
     caseResults.push(caseResult)
+
+    const completedResults = caseResults.flatMap((result) => result.results)
+    const failedResults = completedResults.filter((result) => result.status === 'error')
+    if (!input.runControls.continueOnError && failedResults.length > 0) {
+      break
+    }
+    const failureRate = completedResults.length > 0 ? (failedResults.length / completedResults.length) * 100 : 0
+    if (failedResults.length > 0 && failureRate >= input.runControls.stopAfterFailureRatePercent) {
+      break
+    }
   }
 
   return NextResponse.json({
@@ -1191,7 +1313,25 @@ export async function POST(request: Request) {
     createdAt: new Date().toISOString(),
     providerId: input.providerId,
     caseCount: selectedCases.length,
-    modelCount: configs.length,
+    modelCount: selectedModelCount,
+    selectedModelCount,
+    workflowConfigCount,
+    modelOnlyConfigCount,
+    configCount: totalConfigCount,
+    totalConfigCount,
+    estimatedCalls,
+    estimatedRiskLevel,
+    benchmarkConfigs: configs.map(({ promptTemplateText, workflow, ...config }) => ({
+      ...config,
+      workflow: workflow
+        ? {
+            ...workflow,
+            steps: workflow.steps.map(({ promptTemplateText: _promptTemplateText, ...step }) => step),
+          }
+        : undefined,
+      hasPromptTemplateText: Boolean(promptTemplateText),
+    })),
+    runControls: input.runControls,
     cases: caseResults,
     aggregate: buildAggregate(caseResults),
   })

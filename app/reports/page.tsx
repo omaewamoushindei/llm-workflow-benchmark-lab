@@ -7,6 +7,15 @@ import { Sidebar } from "@/components/dashboard/sidebar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  LATEST_EVALUATION_CRITERIA_STORAGE_KEY,
+  getActiveScoringWeight,
+  getNormalizedCriterionWeights,
+  getReportOnlyCriteria,
+  getScoringCriteria,
+  parseEvaluationCriteria,
+  type EvaluationCriterion,
+} from "@/lib/evaluation-criteria"
 import type { EvaluationResponse, LlmEvaluationResult } from "@/lib/types"
 import {
   AlertOctagon,
@@ -31,6 +40,9 @@ type BatchEvaluationResponse = {
   providerId: "openrouter" | "groq"
   caseCount: number
   modelCount: number
+  selectedModelCount?: number
+  configCount?: number
+  totalConfigCount?: number
   cases: Array<{
     caseId: string
     title: string
@@ -42,6 +54,7 @@ type BatchEvaluationResponse = {
     referenceChecks: NonNullable<EvaluationResponse["referenceChecks"]>
     results: LlmEvaluationResult[]
   }>
+  criteriaSettings?: EvaluationCriterion[]
   aggregate: {
     averageRecommendationMatch: number | null
     averageCriterionAlignment: number | null
@@ -76,6 +89,14 @@ type WeakCase = {
   expectedReferenceLabel: string
   averageCriterionAlignment: number | null
   failedCalls: number
+}
+
+type FindingItem = {
+  id?: string
+  configId?: string
+  caseId?: string
+  type?: string
+  text: string
 }
 
 const mockRankings: ModelRanking[] = [
@@ -133,16 +154,21 @@ function scoreOrZero(value: number | null): number {
   return value ?? 0
 }
 
-function getWeightedScore(model: Pick<ModelRanking, "averageRecommendationMatch" | "averageCriterionAlignment" | "averageSafety" | "averageExplainability">): number {
-  return (
-    scoreOrZero(model.averageRecommendationMatch) * 0.35 +
-    scoreOrZero(model.averageCriterionAlignment) * 0.3 +
-    scoreOrZero(model.averageSafety) * 0.25 +
-    scoreOrZero(model.averageExplainability) * 0.1
-  )
+function getWeightedScore(
+  model: Pick<ModelRanking, "averageRecommendationMatch" | "averageCriterionAlignment" | "averageSafety" | "averageExplainability">,
+  criteria: EvaluationCriterion[],
+): number {
+  const normalizedWeights = getNormalizedCriterionWeights(criteria)
+  const weightedValues = [
+    scoreOrZero(model.averageRecommendationMatch) * (normalizedWeights["recommendation-match"] ?? 0),
+    scoreOrZero(model.averageCriterionAlignment) * (normalizedWeights["criterion-alignment"] ?? 0),
+    scoreOrZero(model.averageSafety) * (normalizedWeights["safety-risk-detection"] ?? 0),
+    scoreOrZero(model.averageExplainability) * (normalizedWeights.explainability ?? 0),
+  ]
+  return weightedValues.reduce((sum, value) => sum + value, 0)
 }
 
-function buildModelRankings(batch: BatchEvaluationResponse): ModelRanking[] {
+function buildModelRankings(batch: BatchEvaluationResponse, criteria: EvaluationCriterion[]): ModelRanking[] {
   const allResults = batch.cases.flatMap((caseResult) => caseResult.results)
   const configIds = Array.from(new Set(allResults.map((result) => result.configId)))
 
@@ -171,7 +197,7 @@ function buildModelRankings(batch: BatchEvaluationResponse): ModelRanking[] {
         casesEvaluated: modelResults.length,
       }
 
-      return { ...ranking, weightedScore: getWeightedScore(ranking) }
+      return { ...ranking, weightedScore: getWeightedScore(ranking, criteria) }
     })
     .sort((a, b) => b.weightedScore - a.weightedScore)
 }
@@ -206,6 +232,9 @@ function getUnsafeRecommendationExamples(batch: BatchEvaluationResponse) {
           caseResult.referenceDecision.recommendation !== "consider_discontinuation",
       )
       .map((result) => ({
+        configId: result.configId,
+        caseId: caseResult.caseId,
+        type: "unsafe_recommendation",
         caseTitle: caseResult.title,
         modelLabel: result.modelLabel,
         reference: caseResult.referenceDecision.recommendation,
@@ -224,6 +253,9 @@ function getMatchedButLowCriterionExamples(batch: BatchEvaluationResponse) {
           result.scores.alignment < 70,
       )
       .map((result) => ({
+        configId: result.configId,
+        caseId: caseResult.caseId,
+        type: "matched_low_criterion",
         caseTitle: caseResult.title,
         modelLabel: result.modelLabel,
         alignment: result.scores?.alignment ?? null,
@@ -236,6 +268,9 @@ function getFailedCalls(batch: BatchEvaluationResponse) {
     caseResult.results
       .filter((result) => result.status === "error")
       .map((result) => ({
+        configId: result.configId,
+        caseId: caseResult.caseId,
+        type: "failed_call",
         caseTitle: caseResult.title,
         modelLabel: result.modelLabel,
         failureReason: result.failureReason ?? "unknown",
@@ -268,20 +303,30 @@ function ScoreBar({ score, label }: { score: number | null | undefined; label: s
 
 export default function ReportsPage() {
   const [batchResponse, setBatchResponse] = useState<BatchEvaluationResponse | null>(null)
+  const [reportCriteria, setReportCriteria] = useState<EvaluationCriterion[]>(() => parseEvaluationCriteria(null))
 
   useEffect(() => {
     try {
       const storedBatch = sessionStorage.getItem("latestBatchEvaluationResponse")
-      if (!storedBatch) return
-      setBatchResponse(JSON.parse(storedBatch) as BatchEvaluationResponse)
+      const storedCriteria = sessionStorage.getItem(LATEST_EVALUATION_CRITERIA_STORAGE_KEY)
+      const parsedBatch = storedBatch ? (JSON.parse(storedBatch) as BatchEvaluationResponse) : null
+      setBatchResponse(parsedBatch)
+      setReportCriteria(
+        parsedBatch?.criteriaSettings ??
+          parseEvaluationCriteria(storedCriteria),
+      )
     } catch {
       setBatchResponse(null)
+      setReportCriteria(parseEvaluationCriteria(null))
     }
   }, [])
 
   const rankings = useMemo(() => {
-    return batchResponse ? buildModelRankings(batchResponse) : mockRankings
-  }, [batchResponse])
+    return batchResponse ? buildModelRankings(batchResponse, reportCriteria) : mockRankings
+  }, [batchResponse, reportCriteria])
+  const activeReportScoringCriteria = getScoringCriteria(reportCriteria)
+  const reportOnlyCriteria = getReportOnlyCriteria(reportCriteria)
+  const activeReportWeight = getActiveScoringWeight(reportCriteria)
   const bestConfiguration = rankings[0]
   const weakestCases = useMemo(() => {
     return batchResponse ? buildWeakestCases(batchResponse) : []
@@ -340,7 +385,9 @@ export default function ReportsPage() {
                 {isRealReport ? `${batchResponse?.caseCount ?? 0} Cases Evaluated` : "48 Cases Evaluated (Mock)"}
               </Badge>
               <Badge variant="outline" className="text-muted-foreground">
-                {isRealReport ? `${batchResponse?.modelCount ?? 0} Configurations Tested` : "3 Configurations Tested (Mock)"}
+                {isRealReport
+                  ? `${batchResponse?.totalConfigCount ?? batchResponse?.configCount ?? batchResponse?.modelCount ?? 0} Configurations Tested`
+                  : "3 Configurations Tested (Mock)"}
               </Badge>
             </div>
             <div className="flex items-center gap-2">
@@ -372,7 +419,10 @@ export default function ReportsPage() {
                   <p className="text-foreground leading-relaxed">
                     Batch <span className="font-medium">{batchResponse?.batchId}</span> evaluated{" "}
                     <span className="font-medium">{batchResponse?.caseCount}</span> cases across{" "}
-                    <span className="font-medium">{batchResponse?.modelCount}</span> workflows/configurations using{" "}
+                    <span className="font-medium">
+                      {batchResponse?.totalConfigCount ?? batchResponse?.configCount ?? batchResponse?.modelCount}
+                    </span>{" "}
+                    benchmark configurations using{" "}
                     <span className="font-medium">{batchResponse?.providerId}</span>.
                   </p>
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-2">
@@ -402,11 +452,32 @@ export default function ReportsPage() {
               </div>
               <CardDescription>
                 {isRealReport
-                  ? "Weighted score: recommendation match 35%, criterion alignment 30%, safety 25%, explainability 10%"
+                  ? "Weighted score uses the active scoring criteria configured in Evaluation Setup. Weights are normalized during ranking."
                   : "Mock/demo ranking shown until a batch result is available"}
               </CardDescription>
             </CardHeader>
             <CardContent>
+              {isRealReport ? (
+                <div className="mb-4 rounded-lg border border-border p-3">
+                  <p className="text-sm font-medium text-foreground">Criteria used</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Active scoring weight: {activeReportWeight}. Active scoring weights are normalized during ranking.
+                    Report-only criteria do not affect numeric ranking.
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {activeReportScoringCriteria.map((criterion) => (
+                      <Badge key={criterion.id} variant="secondary">
+                        {criterion.name}: {criterion.weight}
+                      </Badge>
+                    ))}
+                    {reportOnlyCriteria.map((criterion) => (
+                      <Badge key={criterion.id} variant="outline">
+                        Report-only: {criterion.name}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               <div className="space-y-4">
                 {rankings.map((config, index) => (
                   <div
@@ -570,25 +641,45 @@ export default function ReportsPage() {
                     title="Unsafe recommendation examples"
                     count={unsafeExamples.length}
                     emptyText="No unsafe discontinuation examples were detected."
-                    items={unsafeExamples.slice(0, 5).map((item) => `${item.modelLabel} on ${item.caseTitle}; reference was ${item.reference}`)}
+                    items={unsafeExamples.slice(0, 5).map((item) => ({
+                      configId: item.configId,
+                      caseId: item.caseId,
+                      type: item.type,
+                      text: `${item.modelLabel} on ${item.caseTitle}; reference was ${item.reference}`,
+                    }))}
                   />
                   <FindingBlock
                     title="Failed model calls"
                     count={failedCalls.length}
                     emptyText="No failed model calls were recorded."
-                    items={failedCalls.slice(0, 5).map((item) => `${item.modelLabel} on ${item.caseTitle}: ${item.failureReason}`)}
+                    items={failedCalls.slice(0, 5).map((item) => ({
+                      configId: item.configId,
+                      caseId: item.caseId,
+                      type: `${item.type}-${item.failureReason}`,
+                      text: `${item.modelLabel} on ${item.caseTitle}: ${item.failureReason}`,
+                    }))}
                   />
                   <FindingBlock
                     title="Rate-limited calls"
                     count={rateLimitedCalls.length}
                     emptyText="No rate-limited calls were recorded."
-                    items={rateLimitedCalls.slice(0, 5).map((item) => `${item.modelLabel} on ${item.caseTitle}`)}
+                    items={rateLimitedCalls.slice(0, 5).map((item) => ({
+                      configId: item.configId,
+                      caseId: item.caseId,
+                      type: `${item.type}-rate_limited`,
+                      text: `${item.modelLabel} on ${item.caseTitle}`,
+                    }))}
                   />
                   <FindingBlock
                     title="Final recommendation matched but criterion alignment was low"
                     count={matchedLowCriterion.length}
                     emptyText="No low-criterion-alignment matches were detected."
-                    items={matchedLowCriterion.slice(0, 5).map((item) => `${item.modelLabel} on ${item.caseTitle}: ${formatScore(item.alignment)}`)}
+                    items={matchedLowCriterion.slice(0, 5).map((item) => ({
+                      configId: item.configId,
+                      caseId: item.caseId,
+                      type: item.type,
+                      text: `${item.modelLabel} on ${item.caseTitle}: ${formatScore(item.alignment)}`,
+                    }))}
                   />
                 </>
               ) : (
@@ -685,8 +776,14 @@ function FindingBlock({
   title: string
   count: number
   emptyText: string
-  items: string[]
+  items: Array<string | FindingItem>
 }) {
+  const getFindingText = (item: string | FindingItem) => (typeof item === "string" ? item : item.text)
+  const getFindingKey = (item: string | FindingItem, index: number) => {
+    if (typeof item === "string") return `${title}-${index}`
+    return `${item.id ?? item.configId ?? "config"}-${item.caseId ?? "case"}-${item.type ?? "finding"}-${index}`
+  }
+
   return (
     <div className="rounded-lg border border-border p-4">
       <div className="flex items-center justify-between gap-3 mb-3">
@@ -695,10 +792,10 @@ function FindingBlock({
       </div>
       {items.length > 0 ? (
         <ul className="space-y-2">
-          {items.map((item) => (
-            <li key={item} className="flex items-start gap-2 text-sm text-muted-foreground">
+          {items.map((item, index) => (
+            <li key={getFindingKey(item, index)} className="flex items-start gap-2 text-sm text-muted-foreground">
               <AlertTriangle className="h-3.5 w-3.5 text-warning mt-0.5 shrink-0" />
-              {item}
+              {getFindingText(item)}
             </li>
           ))}
         </ul>

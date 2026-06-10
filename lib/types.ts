@@ -145,6 +145,19 @@ export interface BenchmarkConfig {
   toolAssisted?: boolean
 }
 
+export interface RunControls {
+  delayBetweenCallsMs: number
+  delayBetweenWorkflowStepsMs: number
+  maxRetries: number
+  retryBackoffMode: 'provider_hint' | 'exponential'
+  maxOutputTokens: number
+  compactPromptMode: boolean
+  continueOnError: boolean
+  stopAfterFailureRatePercent: number
+  maxCasesPerRun: number
+  maxConfigsPerRun: number
+}
+
 export interface LlmEvaluationResult {
   configId: string
   modelLabel: string
@@ -161,6 +174,8 @@ export interface LlmEvaluationResult {
   error?: string
   failureReason?: ModelFailureReason
   retryCount?: number
+  failedStepName?: string
+  failedStepIndex?: number
   scores?: {
     recommendationMatch?: number
     alignment: number

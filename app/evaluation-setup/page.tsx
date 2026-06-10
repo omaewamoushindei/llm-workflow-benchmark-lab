@@ -10,18 +10,26 @@ import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Progress } from "@/components/ui/progress"
 import { benchmarkCases, type BenchmarkCase } from "@/lib/benchmark-cases"
+import {
+  EVALUATION_CRITERIA_STORAGE_KEY,
+  LATEST_EVALUATION_CRITERIA_STORAGE_KEY,
+  getActiveScoringWeight,
+  getReportOnlyCriteria,
+  getScoringCriteria,
+  parseEvaluationCriteria,
+  resetEvaluationCriterion,
+  type EvaluationCriterion,
+  type EvaluationScoringMethod,
+} from "@/lib/evaluation-criteria"
 import { DEFAULT_EVALUATION_WORKFLOWS } from "@/lib/evaluation-workflows"
 import { DEFAULT_PROMPT_TEMPLATES, getDefaultPromptTemplate } from "@/lib/prompt-templates"
-import type { BenchmarkConfig, EvaluationConfig, EvaluationWorkflow, PromptTemplate, WorkflowStep, WorkflowType } from "@/lib/types"
+import type { BenchmarkConfig, EvaluationConfig, EvaluationWorkflow, PromptTemplate, RunControls, WorkflowStep, WorkflowType } from "@/lib/types"
 import { 
   Play, 
   Save, 
   Bot,
-  CheckCircle2,
-  Shield,
-  Eye,
-  AlertTriangle,
   RefreshCw
 } from "lucide-react"
 
@@ -55,6 +63,39 @@ type ModelTestResponse = {
 }
 
 type PromptDraft = Pick<PromptTemplate, "name" | "description" | "text" | "expectedOutputSchema">
+type CriterionDraft = Pick<EvaluationCriterion, "name" | "description" | "details" | "enabled" | "weight" | "scoringMethod">
+
+type BenchmarkRunProgress = {
+  isRunning: boolean
+  startedAt: string | null
+  elapsedSeconds: number
+  estimatedTotalCalls: number
+  estimatedTotalSteps: number
+  completedCalls: number
+  completedSteps: number
+  currentStatus: string
+  currentCaseLabel?: string
+  currentConfigLabel?: string
+  progressPercent: number
+  estimatedRemainingSeconds?: number | null
+  warning?: string | null
+}
+
+const INITIAL_BENCHMARK_PROGRESS: BenchmarkRunProgress = {
+  isRunning: false,
+  startedAt: null,
+  elapsedSeconds: 0,
+  estimatedTotalCalls: 0,
+  estimatedTotalSteps: 0,
+  completedCalls: 0,
+  completedSteps: 0,
+  currentStatus: "Not started",
+  progressPercent: 0,
+  estimatedRemainingSeconds: null,
+  warning: null,
+}
+
+const AVERAGE_CALL_DURATION_ESTIMATE_MS = 5000
 
 type ProviderId = "openrouter" | "groq"
 
@@ -133,13 +174,15 @@ const benchmarkCaseFilters: Array<{ value: BenchmarkCaseFilter; label: string }>
 const visibleModelLimit = 30
 
 const setupSections = [
-  { id: "providers-models", label: "Providers & Models" },
-  { id: "prompt-library", label: "Prompt Library" },
-  { id: "workflow-builder", label: "Workflow Builder" },
-  { id: "benchmark-cases", label: "Cases" },
-  { id: "run-settings", label: "Run Settings" },
-  { id: "configuration-summary", label: "Summary" },
+  { id: "providers", label: "Providers & Models" },
+  { id: "prompts", label: "Prompt Library" },
+  { id: "workflows", label: "Workflow Builder" },
+  { id: "cases", label: "Cases" },
+  { id: "run", label: "Run Settings" },
+  { id: "summary", label: "Summary" },
 ] as const
+
+type ActiveTab = "providers" | "prompts" | "workflows" | "cases" | "run" | "summary"
 
 const failureReasonLabels: Record<NonNullable<ModelTestResult["failureReason"]>, string> = {
   needs_credits: "needs credits",
@@ -149,38 +192,14 @@ const failureReasonLabels: Record<NonNullable<ModelTestResult["failureReason"]>,
   unknown: "unknown",
 }
 
-const evaluationCriteria = [
-  { 
-    id: "guideline", 
-    name: "Guideline alignment", 
-    description: "Adherence to PCT-guided antibiotic stewardship guidelines",
-    icon: CheckCircle2
-  },
-  { 
-    id: "explainability", 
-    name: "Explainability", 
-    description: "Clear reasoning and justification for recommendations",
-    icon: Eye
-  },
-  { 
-    id: "hallucination", 
-    name: "Hallucination detection", 
-    description: "Detection of fabricated or unsupported claims",
-    icon: AlertTriangle
-  },
-  { 
-    id: "safety", 
-    name: "Safety risk detection", 
-    description: "Identification of potentially harmful recommendations",
-    icon: Shield
-  },
-  { 
-    id: "robustness", 
-    name: "Robustness across case variations", 
-    description: "Consistency across similar clinical scenarios",
-    icon: RefreshCw
-  },
-]
+const scoringMethodLabels: Record<EvaluationScoringMethod, string> = {
+  deterministic_reference_check: "Deterministic reference",
+  json_field_alignment: "JSON field alignment",
+  safety_rule_check: "Safety rule",
+  explainability_rubric: "Explainability rubric",
+  robustness_comparison: "Robustness comparison",
+  report_only: "Report only",
+}
 
 type EvaluationSettings = {
   providerId: ProviderId
@@ -492,6 +511,27 @@ function benchmarkCaseMatchesFilter(benchmarkCase: BenchmarkCase, filter: Benchm
   }
 }
 
+function formatDuration(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return "Estimating..."
+  const safeSeconds = Math.max(0, Math.round(seconds))
+  const minutes = Math.floor(safeSeconds / 60)
+  const remainingSeconds = safeSeconds % 60
+  if (minutes === 0) return `${remainingSeconds}s`
+  return `${minutes}m ${remainingSeconds}s`
+}
+
+function countConfigCalls(config: BenchmarkConfig): number {
+  if (config.configType === "workflow" && config.workflow) {
+    return config.workflow.steps.filter((step) => step.stepType !== "deterministic_precheck" && Boolean(step.modelId)).length
+  }
+  return 1
+}
+
+function countConfigSteps(config: BenchmarkConfig): number {
+  if (config.configType === "workflow" && config.workflow) return config.workflow.steps.length
+  return 1
+}
+
 export default function EvaluationSetupPage() {
   const router = useRouter()
   const [hasMounted, setHasMounted] = useState(false)
@@ -516,14 +556,15 @@ export default function EvaluationSetupPage() {
     expectedOutputSchema: "pct_json",
   })
   const [modelSearch, setModelSearch] = useState("")
-  const [freeOnly, setFreeOnly] = useState(true)
-  const [textOnly, setTextOnly] = useState(true)
+  const [freeOnly, setFreeOnly] = useState(false)
+  const [textOnly, setTextOnly] = useState(false)
   const [structuredOnly, setStructuredOnly] = useState(false)
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>("all")
   const [sortOption, setSortOption] = useState<SortOption>("free-first")
   const [modelTestResults, setModelTestResults] = useState<Record<string, ModelTestResult>>({})
   const [modelsTesting, setModelsTesting] = useState(false)
   const [modelTestError, setModelTestError] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<ActiveTab>("providers")
   const [providerApiKeys, setProviderApiKeys] = useState<ProviderApiKeys>({})
   const [providerInputs, setProviderInputs] = useState<Record<ProviderId, string>>({
     openrouter: "",
@@ -535,19 +576,34 @@ export default function EvaluationSetupPage() {
   const [includeRawModelBaselines, setIncludeRawModelBaselines] = useState(true)
   const [includeStructuredPromptBaselines, setIncludeStructuredPromptBaselines] = useState(true)
   const [includeEnabledWorkflows, setIncludeEnabledWorkflows] = useState(true)
-  const [selectedCriteria, setSelectedCriteria] = useState<string[]>(["guideline", "explainability", "safety"])
+  const [criteriaLibrary, setCriteriaLibrary] = useState<EvaluationCriterion[]>(() => parseEvaluationCriteria(null))
+  const [criteriaLoaded, setCriteriaLoaded] = useState(false)
+  const [expandedCriterionIds, setExpandedCriterionIds] = useState<Record<string, boolean>>({})
+  const [editingCriterionId, setEditingCriterionId] = useState<string | null>(null)
+  const [criterionDraft, setCriterionDraft] = useState<CriterionDraft | null>(null)
   const [numberOfCases, setNumberOfCases] = useState("10")
   const [batchRun, setBatchRun] = useState(true)
   const [storeOutputs, setStoreOutputs] = useState(true)
   const [generateReport, setGenerateReport] = useState(true)
   const [batchDelayMs, setBatchDelayMs] = useState("2000")
+  const [workflowStepDelayMs, setWorkflowStepDelayMs] = useState("2000")
   const [batchMaxRetries, setBatchMaxRetries] = useState("2")
+  const [retryBackoffMode, setRetryBackoffMode] = useState<RunControls["retryBackoffMode"]>("provider_hint")
+  const [maxOutputTokens, setMaxOutputTokens] = useState("600")
+  const [compactPromptMode, setCompactPromptMode] = useState(true)
+  const [continueOnError, setContinueOnError] = useState(true)
+  const [stopAfterFailureRatePercent, setStopAfterFailureRatePercent] = useState("100")
+  const [maxConfigsPerRun, setMaxConfigsPerRun] = useState("25")
+  const [showRequestPayload, setShowRequestPayload] = useState(false)
+  const [expandedWorkflowIds, setExpandedWorkflowIds] = useState<Record<string, boolean>>({})
   const [benchmarkCaseFilter, setBenchmarkCaseFilter] = useState<BenchmarkCaseFilter>("all")
   const [selectedBenchmarkCaseIds, setSelectedBenchmarkCaseIds] = useState<string[]>(
     benchmarkCases.map((benchmarkCase) => benchmarkCase.id),
   )
   const [benchmarkRunning, setBenchmarkRunning] = useState(false)
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null)
+  const [benchmarkProgress, setBenchmarkProgress] = useState<BenchmarkRunProgress>(INITIAL_BENCHMARK_PROGRESS)
+  const [benchmarkResultsReady, setBenchmarkResultsReady] = useState(false)
 
   useEffect(() => {
     setHasMounted(true)
@@ -560,6 +616,8 @@ export default function EvaluationSetupPage() {
     setPromptTemplatesLoaded(true)
     setEvaluationWorkflows(parseEvaluationWorkflows(window.localStorage.getItem(EVALUATION_WORKFLOWS_STORAGE_KEY)))
     setWorkflowsLoaded(true)
+    setCriteriaLibrary(parseEvaluationCriteria(window.localStorage.getItem(EVALUATION_CRITERIA_STORAGE_KEY)))
+    setCriteriaLoaded(true)
 
     const existing = parseEvaluationSettings(window.localStorage.getItem(EVALUATION_SETTINGS_STORAGE_KEY))
     if (!existing) return
@@ -575,6 +633,16 @@ export default function EvaluationSetupPage() {
     setIncludeStructuredPromptBaselines(existing.includeStructuredPromptBaselines !== false)
     setIncludeEnabledWorkflows(existing.includeEnabledWorkflows !== false)
   }, [hasMounted])
+
+  useEffect(() => {
+    if (!hasMounted || !criteriaLoaded) return
+
+    try {
+      window.localStorage.setItem(EVALUATION_CRITERIA_STORAGE_KEY, JSON.stringify(criteriaLibrary))
+    } catch {
+      // ignore localStorage write errors
+    }
+  }, [criteriaLibrary, criteriaLoaded, hasMounted])
 
   useEffect(() => {
     if (!hasMounted || !promptTemplatesLoaded) return
@@ -699,12 +767,101 @@ export default function EvaluationSetupPage() {
     setModelsError(null)
   }
 
-  const toggleCriteria = (criteriaId: string) => {
-    setSelectedCriteria(prev => 
-      prev.includes(criteriaId) 
-        ? prev.filter(id => id !== criteriaId)
-        : [...prev, criteriaId]
+  const toggleCriterionEnabled = (criterionId: string) => {
+    setCriteriaLibrary((current) =>
+      current.map((criterion) =>
+        criterion.id === criterionId
+          ? { ...criterion, enabled: !criterion.enabled, updatedAt: new Date().toISOString() }
+          : criterion,
+      ),
     )
+  }
+
+  const toggleCriterionDetails = (criterionId: string) => {
+    setExpandedCriterionIds((current) => ({
+      ...current,
+      [criterionId]: !current[criterionId],
+    }))
+  }
+
+  const startEditingCriterion = (criterion: EvaluationCriterion) => {
+    setEditingCriterionId(criterion.id)
+    setCriterionDraft({
+      name: criterion.name,
+      description: criterion.description,
+      details: criterion.details,
+      enabled: criterion.enabled,
+      weight: criterion.weight,
+      scoringMethod: criterion.scoringMethod,
+    })
+  }
+
+  const addCriterion = () => {
+    const now = new Date().toISOString()
+    const criterion: EvaluationCriterion = {
+      id: `custom-criterion-${Date.now()}`,
+      name: "New Criterion",
+      description: "",
+      details: "",
+      scoringMethod: "report_only",
+      enabled: true,
+      weight: 0,
+      isDefault: false,
+      updatedAt: now,
+    }
+    setCriteriaLibrary((current) => [...current, criterion])
+    setEditingCriterionId(criterion.id)
+    setCriterionDraft({
+      name: criterion.name,
+      description: criterion.description,
+      details: criterion.details,
+      enabled: criterion.enabled,
+      weight: criterion.weight,
+      scoringMethod: criterion.scoringMethod,
+    })
+  }
+
+  const saveCriterionDraft = () => {
+    if (!editingCriterionId || !criterionDraft) return
+
+    setCriteriaLibrary((current) =>
+      current.map((criterion) =>
+        criterion.id === editingCriterionId
+          ? {
+              ...criterion,
+              name: criterionDraft.name.trim() || "Untitled Criterion",
+              description: criterionDraft.description,
+              details: criterionDraft.details,
+              enabled: criterionDraft.enabled,
+              weight: Math.max(0, Math.round(Number(criterionDraft.weight) || 0)),
+              scoringMethod: criterion.isDefault ? criterion.scoringMethod : criterionDraft.scoringMethod,
+              updatedAt: new Date().toISOString(),
+            }
+          : criterion,
+      ),
+    )
+    setEditingCriterionId(null)
+    setCriterionDraft(null)
+  }
+
+  const deleteCriterion = (criterionId: string) => {
+    setCriteriaLibrary((current) => current.filter((criterion) => criterion.id !== criterionId || criterion.isDefault))
+    if (editingCriterionId === criterionId) {
+      setEditingCriterionId(null)
+      setCriterionDraft(null)
+    }
+  }
+
+  const resetCriterion = (criterionId: string) => {
+    const defaultCriterion = resetEvaluationCriterion(criterionId)
+    if (!defaultCriterion) return
+    setCriteriaLibrary((current) =>
+      current.map((criterion) => (criterion.id === criterionId ? defaultCriterion : criterion)),
+    )
+    if (editingCriterionId === criterionId) {
+      setEditingCriterionId(null)
+      setCriterionDraft(null)
+    }
   }
 
   const testSelectedModels = async () => {
@@ -851,6 +1008,16 @@ export default function EvaluationSetupPage() {
       }
     })
   }, [availableModels, freeOnly, modelSearch, providerFilter, sortOption, structuredOnly, textOnly])
+
+  useEffect(() => {
+    if (selectedProviderId !== "groq") return
+    if (availableModels.length === 0 || filteredModels.length > 0) return
+    if (!freeOnly && !textOnly && !structuredOnly) return
+
+    setFreeOnly(false)
+    setTextOnly(false)
+    setStructuredOnly(false)
+  }, [availableModels.length, filteredModels.length, freeOnly, selectedProviderId, structuredOnly, textOnly])
 
   const filteredBenchmarkCases = useMemo(() => {
     return benchmarkCases.filter((benchmarkCase) =>
@@ -1141,6 +1308,13 @@ export default function EvaluationSetupPage() {
     )
   }
 
+  const toggleWorkflowExpanded = (workflowId: string) => {
+    setExpandedWorkflowIds((current) => ({
+      ...current,
+      [workflowId]: !current[workflowId],
+    }))
+  }
+
   const duplicateWorkflow = (workflow: EvaluationWorkflow) => {
     const copy: EvaluationWorkflow = {
       ...workflow,
@@ -1266,6 +1440,25 @@ export default function EvaluationSetupPage() {
     )
   }
 
+  const readBoundedNumber = (value: string, fallback: number, max: number): number => {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return fallback
+    return Math.min(Math.max(0, Math.round(parsed)), max)
+  }
+
+  const buildRunControls = (): RunControls => ({
+    delayBetweenCallsMs: readBoundedNumber(batchDelayMs, 2000, 60000),
+    delayBetweenWorkflowStepsMs: readBoundedNumber(workflowStepDelayMs, 2000, 60000),
+    maxRetries: readBoundedNumber(batchMaxRetries, 2, 5),
+    retryBackoffMode,
+    maxOutputTokens: readBoundedNumber(maxOutputTokens, 600, 2000),
+    compactPromptMode,
+    continueOnError,
+    stopAfterFailureRatePercent: readBoundedNumber(stopAfterFailureRatePercent, 100, 100),
+    maxCasesPerRun: readBoundedNumber(numberOfCases, selectedBenchmarkCaseIds.length || benchmarkCases.length, 500),
+    maxConfigsPerRun: readBoundedNumber(maxConfigsPerRun, 25, 100),
+  })
+
   const buildBenchmarkConfigsForRun = (workflowsForRun: EvaluationWorkflow[]): BenchmarkConfig[] => {
     const rawTemplate = getPromptTemplateForRun(defaultPromptTemplateId)
     const structuredTemplate = getStructuredPromptTemplateForRun()
@@ -1327,6 +1520,7 @@ export default function EvaluationSetupPage() {
 
     setBenchmarkRunning(true)
     setBenchmarkError(null)
+    setBenchmarkResultsReady(false)
 
     try {
       const providerId = selectedProviderId
@@ -1357,14 +1551,44 @@ export default function EvaluationSetupPage() {
       const defaultPromptTemplate =
         getPromptTemplateForRun(defaultPromptTemplateId)
       const apiKey = providerApiKeys[providerId]?.key
-      const delayNumber = Number(batchDelayMs)
-      const retryNumber = Number(batchMaxRetries)
-      const delayMs = Number.isFinite(delayNumber) ? Math.max(0, Math.round(delayNumber)) : 2000
-      const maxRetries = Number.isFinite(retryNumber) ? Math.min(Math.max(0, Math.round(retryNumber)), 5) : 2
+      const runControls = buildRunControls()
+      const configsForProgress = benchmarkConfigs.slice(0, runControls.maxConfigsPerRun)
+      const caseCountForProgress = Math.min(
+        selectedBenchmarkCaseIds.length || benchmarkCases.length,
+        runControls.maxCasesPerRun,
+      )
+      const estimatedTotalCalls =
+        configsForProgress.reduce((sum, config) => sum + countConfigCalls(config), 0) * caseCountForProgress
+      const estimatedTotalSteps =
+        configsForProgress.reduce((sum, config) => sum + countConfigSteps(config), 0) * caseCountForProgress
+      const firstSelectedCase =
+        benchmarkCases.find((benchmarkCase) => selectedBenchmarkCaseIds.includes(benchmarkCase.id)) ?? benchmarkCases[0]
+
+      setBenchmarkProgress({
+        isRunning: true,
+        startedAt: new Date().toISOString(),
+        elapsedSeconds: 0,
+        estimatedTotalCalls,
+        estimatedTotalSteps,
+        completedCalls: 0,
+        completedSteps: 0,
+        currentStatus: "Preparing benchmark request...",
+        currentCaseLabel: firstSelectedCase?.title,
+        currentConfigLabel: configsForProgress[0]?.label,
+        progressPercent: 1,
+        estimatedRemainingSeconds: null,
+        warning: null,
+      })
 
       if (!apiKey) {
         throw new Error("Connect an API key for the selected provider first.")
       }
+
+      setBenchmarkProgress((current) => ({
+        ...current,
+        currentStatus: "Sending benchmark request...",
+        progressPercent: Math.max(current.progressPercent, 3),
+      }))
 
       const response = await fetch("/api/batch-evaluate", {
         method: "POST",
@@ -1379,27 +1603,71 @@ export default function EvaluationSetupPage() {
           evaluationWorkflows: workflowsForRun,
           benchmarkConfigs,
           promptTemplates: promptTemplatesForRun,
+          criteriaSettings: criteriaLibrary,
           defaultPromptTemplateId: defaultPromptTemplate.id,
           defaultPromptTemplateText: defaultPromptTemplate.text,
           caseIds: selectedBenchmarkCaseIds,
-          delayMs,
-          maxRetries,
+          delayMs: runControls.delayBetweenCallsMs,
+          maxRetries: runControls.maxRetries,
+          runControls,
         }),
       })
+
+      setBenchmarkProgress((current) => ({
+        ...current,
+        currentStatus: "Waiting for provider responses...",
+        progressPercent: Math.max(current.progressPercent, 5),
+      }))
+
       const json = await response.json()
 
       if (!response.ok) {
         throw new Error(json?.error || `Benchmark failed with status ${response.status}`)
       }
 
+      setBenchmarkProgress((current) => ({
+        ...current,
+        currentStatus: "Processing results...",
+        progressPercent: Math.max(current.progressPercent, 96),
+      }))
+
       window.sessionStorage.setItem("latestBatchEvaluationResponse", JSON.stringify(json))
-      router.push("/benchmark-results")
+      // TODO: include criteria settings in persisted backend batch metadata when server-side run storage is added.
+      window.sessionStorage.setItem(LATEST_EVALUATION_CRITERIA_STORAGE_KEY, JSON.stringify(criteriaLibrary))
+      const completedCalls = typeof json?.estimatedCalls === "number" ? json.estimatedCalls : estimatedTotalCalls
+      const completedSteps = estimatedTotalSteps
+      setBenchmarkProgress((current) => ({
+        ...current,
+        isRunning: false,
+        estimatedTotalCalls: completedCalls,
+        estimatedTotalSteps: completedSteps,
+        completedCalls,
+        completedSteps,
+        currentStatus: "Benchmark completed",
+        progressPercent: 100,
+        estimatedRemainingSeconds: 0,
+        warning: null,
+      }))
+      setBenchmarkResultsReady(true)
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown benchmark error"
       setBenchmarkError(message)
+      setBenchmarkProgress((current) => ({
+        ...current,
+        isRunning: false,
+        currentStatus: "Benchmark failed",
+        warning: message,
+        estimatedRemainingSeconds: null,
+      }))
     } finally {
       setBenchmarkRunning(false)
     }
+  }
+
+  const resetBenchmarkProgress = () => {
+    setBenchmarkProgress(INITIAL_BENCHMARK_PROGRESS)
+    setBenchmarkError(null)
+    setBenchmarkResultsReady(false)
   }
 
   const visibleModels = filteredModels.slice(0, visibleModelLimit)
@@ -1407,12 +1675,9 @@ export default function EvaluationSetupPage() {
     (modelId) => modelTestResults[modelId]?.status === "failed",
   )
   const selectedProviderLabel = selectedProviderId === "openrouter" ? "OpenRouter" : "Groq"
-  const summaryDelayNumber = Number(batchDelayMs)
-  const summaryRetryNumber = Number(batchMaxRetries)
-  const summaryDelayMs = Number.isFinite(summaryDelayNumber) ? Math.max(0, Math.round(summaryDelayNumber)) : 2000
-  const summaryMaxRetries = Number.isFinite(summaryRetryNumber)
-    ? Math.min(Math.max(0, Math.round(summaryRetryNumber)), 5)
-    : 2
+  const summaryRunControls = buildRunControls()
+  const summaryDelayMs = summaryRunControls.delayBetweenCallsMs
+  const summaryMaxRetries = summaryRunControls.maxRetries
   const enabledSummaryWorkflows = evaluationWorkflows.filter((workflow) => selectedWorkflowIds.includes(workflow.id))
   const modelOnlyConfigCount =
     selectedModels.length *
@@ -1421,6 +1686,98 @@ export default function EvaluationSetupPage() {
     Number(includeStructuredPromptBaselines)
   const workflowConfigCount = includeEnabledWorkflows ? enabledSummaryWorkflows.length : 0
   const totalBenchmarkConfigCount = modelOnlyConfigCount + workflowConfigCount
+  const summaryWorkflowsForRun = hydrateWorkflowsForRun(includeEnabledWorkflows ? enabledSummaryWorkflows : [])
+  const summaryBenchmarkConfigs = buildBenchmarkConfigsForRun(summaryWorkflowsForRun).slice(
+    0,
+    summaryRunControls.maxConfigsPerRun,
+  )
+  const summaryCaseCount = Math.min(
+    selectedBenchmarkCaseIds.length || benchmarkCases.length,
+    summaryRunControls.maxCasesPerRun,
+  )
+  const summaryEstimatedCalls =
+    summaryBenchmarkConfigs.reduce((sum, config) => {
+      return sum + countConfigCalls(config)
+    }, 0) * summaryCaseCount
+  const summaryEstimatedSteps =
+    summaryBenchmarkConfigs.reduce((sum, config) => sum + countConfigSteps(config), 0) * summaryCaseCount
+  const activeScoringCriteria = getScoringCriteria(criteriaLibrary)
+  const reportOnlyCriteria = getReportOnlyCriteria(criteriaLibrary)
+  const activeScoringWeight = getActiveScoringWeight(criteriaLibrary)
+  const summaryRiskLevel =
+    summaryEstimatedCalls > 80 || summaryRunControls.delayBetweenCallsMs < 1000
+      ? "high"
+      : summaryEstimatedCalls > 30 || summaryRunControls.delayBetweenCallsMs < 2000
+        ? "medium"
+        : "low"
+  const summaryRequestPayload = {
+    providerId: selectedProviderId,
+    selectedModelIds: selectedModels,
+    benchmarkConfigs: summaryBenchmarkConfigs.map(({ promptTemplateText: _promptTemplateText, workflow, ...config }) => ({
+      ...config,
+      workflow: workflow
+        ? {
+            ...workflow,
+            steps: workflow.steps.map(({ promptTemplateText: _stepPromptTemplateText, ...step }) => step),
+          }
+        : undefined,
+      hasPromptTemplateText: true,
+    })),
+    promptTemplates: "omitted from preview",
+    criteriaSettings: criteriaLibrary,
+    caseIds: selectedBenchmarkCaseIds,
+    runControls: summaryRunControls,
+  }
+  const showBenchmarkProgress = benchmarkProgress.startedAt !== null
+  const tabContentClassName =
+    activeTab === "providers"
+      ? "grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-7xl scroll-mt-24"
+      : activeTab === "workflows" || activeTab === "summary"
+        ? "max-w-5xl mx-auto space-y-6 scroll-mt-24"
+        : "max-w-3xl mx-auto space-y-6 scroll-mt-24"
+
+  useEffect(() => {
+    if (!benchmarkProgress.isRunning || !benchmarkProgress.startedAt) return
+
+    const timer = window.setInterval(() => {
+      setBenchmarkProgress((current) => {
+        if (!current.isRunning || !current.startedAt) return current
+
+        const elapsedMs = Date.now() - new Date(current.startedAt).getTime()
+        const elapsedSeconds = Math.max(0, Math.floor(elapsedMs / 1000))
+        const estimatedDurationMs =
+          current.estimatedTotalCalls * AVERAGE_CALL_DURATION_ESTIMATE_MS +
+          current.estimatedTotalSteps * summaryRunControls.delayBetweenWorkflowStepsMs +
+          current.estimatedTotalCalls * summaryRunControls.delayBetweenCallsMs
+        const safeEstimatedDurationMs = Math.max(estimatedDurationMs, AVERAGE_CALL_DURATION_ESTIMATE_MS)
+        const progressPercent = Math.min(95, Math.max(5, Math.round((elapsedMs / safeEstimatedDurationMs) * 100)))
+        const estimatedRemainingSeconds = Math.max(0, Math.ceil((safeEstimatedDurationMs - elapsedMs) / 1000))
+        const warning =
+          elapsedMs > safeEstimatedDurationMs * 2
+            ? "Long run detected. You can wait, reduce cases/configs, or increase delay settings for the next run."
+            : elapsedMs > safeEstimatedDurationMs
+              ? "This run is taking longer than estimated. Provider rate limits or retries may be active."
+              : null
+
+        return {
+          ...current,
+          elapsedSeconds,
+          progressPercent,
+          estimatedRemainingSeconds,
+          currentStatus: progressPercent > 10 ? "Running provider calls..." : current.currentStatus,
+          warning,
+        }
+      })
+    }, 1000)
+
+    // Future improvement: stream real progress events from /api/batch-evaluate using SSE or WebSockets.
+    return () => window.clearInterval(timer)
+  }, [
+    benchmarkProgress.isRunning,
+    benchmarkProgress.startedAt,
+    summaryRunControls.delayBetweenCallsMs,
+    summaryRunControls.delayBetweenWorkflowStepsMs,
+  ])
 
   if (!hasMounted) {
     return (
@@ -1435,6 +1792,7 @@ export default function EvaluationSetupPage() {
 
           <main className="flex-1 overflow-y-auto p-6">
             <div className="max-w-7xl space-y-6">
+              {activeTab === "providers" && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Loading Evaluation Setup</CardTitle>
@@ -1451,6 +1809,7 @@ export default function EvaluationSetupPage() {
                   </div>
                 </CardContent>
               </Card>
+              )}
             </div>
           </main>
         </div>
@@ -1470,29 +1829,36 @@ export default function EvaluationSetupPage() {
         
         <main className="flex-1 overflow-y-auto p-6">
           <div className="sticky top-0 z-20 -mx-6 mb-6 border-b border-border bg-background/95 px-6 py-3 backdrop-blur">
-            <nav className="flex max-w-7xl gap-2 overflow-x-auto" aria-label="Evaluation setup sections">
+            <nav className="flex max-w-7xl gap-2 overflow-x-auto" aria-label="Evaluation setup tabs">
               {setupSections.map((section) => (
-                <a
+                <button
                   key={section.id}
-                  href={`#${section.id}`}
-                  className="shrink-0 rounded-md border border-border px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                  type="button"
+                  onClick={() => setActiveTab(section.id)}
+                  className={`shrink-0 rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
+                    activeTab === section.id
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                  }`}
                 >
                   {section.label}
-                </a>
+                </button>
               ))}
             </nav>
           </div>
 
-          <div id="providers-models" className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-7xl scroll-mt-24">
+          {activeTab !== "summary" && (
+          <div className={tabContentClassName}>
             {/* Left Column */}
             <div className="space-y-6">
               {/* Model Selection */}
+              {activeTab === "providers" && (
               <Card>
                 <CardHeader>
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <CardTitle className="text-base">Model Selection</CardTitle>
-                      <CardDescription>Choose 1-3 {selectedProviderLabel} models for the single-case evaluation</CardDescription>
+                      <CardDescription>Choose provider models used by benchmark configurations and workflow steps</CardDescription>
                     </div>
                     <Button
                       type="button"
@@ -1527,7 +1893,7 @@ export default function EvaluationSetupPage() {
                     </Badge>
                     {selectedModels.length === 0 ? (
                       <span className="text-xs text-muted-foreground">
-                        No custom models selected. The API will use predefined free fallback configs.
+                        No custom models selected. Model-only benchmark configurations require at least one selected model.
                       </span>
                     ) : null}
                   </div>
@@ -1623,6 +1989,10 @@ export default function EvaluationSetupPage() {
                     </div>
 
                     <p className="text-xs text-muted-foreground">
+                      Provider model metadata varies. If no models appear, disable filters or refresh models.
+                    </p>
+
+                    <p className="text-xs text-muted-foreground">
                       Showing {visibleModels.length} of {filteredModels.length} models
                       {availableModels.length !== filteredModels.length ? ` (${availableModels.length} total loaded)` : ""}
                     </p>
@@ -1697,8 +2067,10 @@ export default function EvaluationSetupPage() {
                   ) : null}
                 </CardContent>
               </Card>
+              )}
 
               {/* Workflow Builder */}
+              {activeTab === "workflows" && (
               <Card id="workflow-builder" className="scroll-mt-24">
                 <CardHeader>
                   <CardTitle className="text-base">Workflow Builder</CardTitle>
@@ -1724,6 +2096,9 @@ export default function EvaluationSetupPage() {
                   <div className="space-y-3">
                     {evaluationWorkflows.map((workflow) => {
                       const isEnabled = selectedWorkflowIds.includes(workflow.id)
+                      const isExpanded = expandedWorkflowIds[workflow.id] === true
+                      const workflowValidation = validateEnabledWorkflows([workflow])
+                      const isToolAssisted = workflow.steps.some((step) => step.stepType === "deterministic_precheck")
 
                       return (
                         <div key={workflow.id} className="rounded-lg border border-border p-4 space-y-4">
@@ -1731,20 +2106,21 @@ export default function EvaluationSetupPage() {
                             <div className="space-y-2 flex-1">
                               <div className="flex flex-wrap items-center gap-2">
                                 <Switch checked={isEnabled} onCheckedChange={() => toggleWorkflowSelection(workflow.id)} />
-                                <span className="text-xs text-muted-foreground">
-                                  {isEnabled ? "Enabled" : "Disabled"}
-                                </span>
-                                <Input
-                                  value={workflow.name}
-                                  onChange={(event) => updateWorkflow(workflow.id, { name: event.target.value })}
-                                  className="max-w-md"
-                                />
-                                {workflow.isDefault ? <Badge variant="secondary">Default</Badge> : null}
+                                <p className="text-sm font-medium text-foreground">{workflow.name}</p>
+                                <Badge variant={isEnabled ? "secondary" : "outline"}>{isEnabled ? "Enabled" : "Disabled"}</Badge>
+                                {workflow.isDefault ? <Badge variant="secondary">Default</Badge> : <Badge variant="outline">Custom</Badge>}
+                                <Badge variant="outline">{workflow.steps.length} steps</Badge>
+                                {isToolAssisted ? <Badge variant="secondary">Tool-assisted</Badge> : null}
+                                <Badge
+                                  variant="outline"
+                                  className={workflowValidation ? "border-destructive/40 text-destructive" : "border-success/30 text-success"}
+                                >
+                                  {workflowValidation ? "Needs attention" : "Valid"}
+                                </Badge>
                               </div>
-                              <Input
-                                value={workflow.description}
-                                onChange={(event) => updateWorkflow(workflow.id, { description: event.target.value })}
-                              />
+                              {workflow.description ? (
+                                <p className="text-xs text-muted-foreground">{workflow.description}</p>
+                              ) : null}
                             </div>
                             <Button
                               type="button"
@@ -1753,7 +2129,7 @@ export default function EvaluationSetupPage() {
                               onClick={() => duplicateWorkflow(workflow)}
                               disabled={Boolean(!hasMounted || evaluationWorkflows.length >= 5)}
                             >
-                              Duplicate workflow
+                              Duplicate
                             </Button>
                             {!workflow.isDefault ? (
                               <Button
@@ -1763,9 +2139,37 @@ export default function EvaluationSetupPage() {
                                 onClick={() => deleteWorkflow(workflow.id)}
                                 disabled={Boolean(!hasMounted)}
                               >
-                                Delete workflow
+                                Delete
                               </Button>
                             ) : null}
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => toggleWorkflowExpanded(workflow.id)}
+                              disabled={Boolean(!hasMounted)}
+                            >
+                              {isExpanded ? "Collapse" : "Expand/Edit"}
+                            </Button>
+                          </div>
+
+                          {isExpanded ? (
+                            <>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="space-y-2">
+                              <Label className="text-xs">Workflow name</Label>
+                              <Input
+                                value={workflow.name}
+                                onChange={(event) => updateWorkflow(workflow.id, { name: event.target.value })}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-xs">Description</Label>
+                              <Input
+                                value={workflow.description}
+                                onChange={(event) => updateWorkflow(workflow.id, { description: event.target.value })}
+                              />
+                            </div>
                           </div>
 
                           <div className="space-y-3">
@@ -1902,15 +2306,19 @@ export default function EvaluationSetupPage() {
                               Preview: {workflow.steps.map((step) => step.name || step.stepType).join(" -> ")}
                             </span>
                           </div>
+                            </>
+                          ) : null}
                         </div>
                       )
                     })}
                   </div>
                 </CardContent>
               </Card>
+              )}
 
               {/* Evaluation Configurations */}
-              <Card className="scroll-mt-24">
+              {false ? (
+              <Card className="hidden">
                 <CardHeader>
                   <CardTitle className="text-base">Evaluation Configurations</CardTitle>
                   <CardDescription>Compare workflow setups across selected benchmark cases</CardDescription>
@@ -2064,8 +2472,10 @@ export default function EvaluationSetupPage() {
                   </div>
                 </CardContent>
               </Card>
+              ) : null}
 
               {/* Benchmark Case Selection */}
+              {activeTab === "cases" && (
               <Card id="benchmark-cases" className="scroll-mt-24">
                 <CardHeader>
                   <CardTitle className="text-base">Benchmark Case Selection</CardTitle>
@@ -2151,8 +2561,10 @@ export default function EvaluationSetupPage() {
                   ) : null}
                 </CardContent>
               </Card>
+              )}
 
               {/* Prompt Library */}
+              {activeTab === "prompts" && (
               <Card id="prompt-library" className="scroll-mt-24">
                 <CardHeader>
                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -2176,7 +2588,7 @@ export default function EvaluationSetupPage() {
                     Prompt changes affect future benchmark runs only.
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Prompt Library stores reusable prompts. Workflow steps select prompts from this library.
+                    Prompt Library is the source of prompts for model-only benchmark configs and workflow steps.
                   </p>
 
                   <div className="space-y-3">
@@ -2316,10 +2728,12 @@ export default function EvaluationSetupPage() {
                   </div>
                 </CardContent>
               </Card>
+              )}
             </div>
 
             {/* Right Column */}
             <div className="space-y-6">
+              {activeTab === "providers" && (
               <Card className="scroll-mt-24">
                 <CardHeader>
                   <CardTitle className="text-base">API Connections</CardTitle>
@@ -2406,48 +2820,218 @@ export default function EvaluationSetupPage() {
                   })}
                 </CardContent>
               </Card>
+              )}
 
               {/* Evaluation Criteria */}
+              {activeTab === "providers" && (
               <Card className="scroll-mt-24">
                 <CardHeader>
-                  <CardTitle className="text-base">Evaluation Criteria</CardTitle>
-                  <CardDescription>Select metrics to assess model performance</CardDescription>
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <CardTitle className="text-base">Criteria Library</CardTitle>
+                      <CardDescription>Inspect and customize the benchmark rubric used for reporting and ranking weights</CardDescription>
+                    </div>
+                    <Button type="button" variant="outline" size="sm" onClick={addCriterion} disabled={Boolean(!hasMounted)}>
+                      Add Criterion
+                    </Button>
+                  </div>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-4">
+                  <div className="rounded-lg border border-border p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-foreground">Active scoring weight: {activeScoringWeight}</p>
+                        <p className="text-xs text-muted-foreground">
+                          Active scoring weights are normalized during ranking. Report-only criteria do not affect numeric score.
+                        </p>
+                      </div>
+                      {activeScoringWeight !== 100 ? (
+                        <Badge variant="outline">Weights normalize to 100</Badge>
+                      ) : (
+                        <Badge variant="secondary">Weights sum to 100</Badge>
+                      )}
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-muted-foreground">
+                    Custom criteria are report-only unless a scoring method is implemented.
+                  </p>
+
                   <div className="space-y-3">
-                    {evaluationCriteria.map((criteria) => {
-                      const isSelected = selectedCriteria.includes(criteria.id)
-                      const Icon = criteria.icon
+                    {criteriaLibrary.map((criterion) => {
+                      const isExpanded = Boolean(expandedCriterionIds[criterion.id])
+                      const isEditing = editingCriterionId === criterion.id && criterionDraft
                       return (
-                        <div 
-                          key={criteria.id}
-                          className={`flex items-center justify-between p-3 rounded-lg border transition-all ${
-                            isSelected ? "border-primary/50 bg-primary/5" : "border-border"
-                          }`}
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className={`w-8 h-8 rounded-md flex items-center justify-center ${
-                              isSelected ? "bg-primary/10" : "bg-muted"
-                            }`}>
-                              <Icon className={`w-4 h-4 ${isSelected ? "text-primary" : "text-muted-foreground"}`} />
+                        <div key={criterion.id} className="rounded-lg border border-border p-3">
+                          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                            <div className="space-y-2">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="font-medium text-sm text-foreground">{criterion.name}</p>
+                                <Badge variant="outline">{scoringMethodLabels[criterion.scoringMethod]}</Badge>
+                                <Badge variant={criterion.isDefault ? "secondary" : "outline"}>
+                                  {criterion.isDefault ? "Default" : "Custom"}
+                                </Badge>
+                                <Badge variant="outline">Weight {criterion.weight}</Badge>
+                              </div>
+                              <p className="text-xs text-muted-foreground">{criterion.description}</p>
                             </div>
-                            <div>
-                              <p className="font-medium text-sm text-foreground">{criteria.name}</p>
-                              <p className="text-xs text-muted-foreground">{criteria.description}</p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Switch checked={criterion.enabled} onCheckedChange={() => toggleCriterionEnabled(criterion.id)} />
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => toggleCriterionDetails(criterion.id)}
+                                disabled={Boolean(!hasMounted)}
+                              >
+                                {isExpanded ? "Hide details" : "View details"}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => startEditingCriterion(criterion)}
+                                disabled={Boolean(!hasMounted)}
+                              >
+                                Edit
+                              </Button>
+                              {criterion.isDefault ? (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => resetCriterion(criterion.id)}
+                                  disabled={Boolean(!hasMounted)}
+                                >
+                                  Reset default
+                                </Button>
+                              ) : (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => deleteCriterion(criterion.id)}
+                                  disabled={Boolean(!hasMounted)}
+                                >
+                                  Delete
+                                </Button>
+                              )}
                             </div>
                           </div>
-                          <Switch 
-                            checked={isSelected}
-                            onCheckedChange={() => toggleCriteria(criteria.id)}
-                          />
+
+                          {isExpanded ? (
+                            <div className="mt-3 rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">
+                              {criterion.details || "No details provided."}
+                            </div>
+                          ) : null}
+
+                          {isEditing ? (
+                            <div className="mt-3 space-y-3 rounded-md border border-border p-3">
+                              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                <div className="space-y-2">
+                                  <Label className="text-xs">Name</Label>
+                                  <Input
+                                    value={criterionDraft.name}
+                                    onChange={(event) => setCriterionDraft((current) => current ? { ...current, name: event.target.value } : current)}
+                                  />
+                                </div>
+                                <div className="space-y-2">
+                                  <Label className="text-xs">Weight</Label>
+                                  <Input
+                                    type="number"
+                                    value={criterionDraft.weight}
+                                    min="0"
+                                    max="100"
+                                    onChange={(event) =>
+                                      setCriterionDraft((current) =>
+                                        current ? { ...current, weight: Number(event.target.value) } : current,
+                                      )
+                                    }
+                                  />
+                                </div>
+                              </div>
+                              <div className="space-y-2">
+                                <Label className="text-xs">Description</Label>
+                                <Input
+                                  value={criterionDraft.description}
+                                  onChange={(event) =>
+                                    setCriterionDraft((current) =>
+                                      current ? { ...current, description: event.target.value } : current,
+                                    )
+                                  }
+                                />
+                              </div>
+                              <div className="space-y-2">
+                                <Label className="text-xs">Details</Label>
+                                <textarea
+                                  value={criterionDraft.details}
+                                  onChange={(event) =>
+                                    setCriterionDraft((current) =>
+                                      current ? { ...current, details: event.target.value } : current,
+                                    )
+                                  }
+                                  className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                />
+                              </div>
+                              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                <div className="space-y-2">
+                                  <Label className="text-xs">Scoring method</Label>
+                                  <select
+                                    value={criterionDraft.scoringMethod}
+                                    onChange={(event) =>
+                                      setCriterionDraft((current) =>
+                                        current
+                                          ? { ...current, scoringMethod: event.target.value as EvaluationScoringMethod }
+                                          : current,
+                                      )
+                                    }
+                                    disabled={Boolean(criterion.isDefault)}
+                                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                                  >
+                                    {Object.entries(scoringMethodLabels).map(([value, label]) => (
+                                      <option key={value} value={value}>{label}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div className="flex items-center justify-between rounded-md border border-border p-3">
+                                  <Label className="text-xs">Enabled</Label>
+                                  <Switch
+                                    checked={criterionDraft.enabled}
+                                    onCheckedChange={(checked) =>
+                                      setCriterionDraft((current) => current ? { ...current, enabled: checked } : current)
+                                    }
+                                  />
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <Button type="button" size="sm" onClick={saveCriterionDraft} disabled={Boolean(!hasMounted)}>
+                                  Save Criterion
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => {
+                                    setEditingCriterionId(null)
+                                    setCriterionDraft(null)
+                                  }}
+                                  disabled={Boolean(!hasMounted)}
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
                       )
                     })}
                   </div>
                 </CardContent>
               </Card>
+              )}
 
               {/* Run Settings */}
+              {activeTab === "run" && (
               <Card id="run-settings" className="scroll-mt-24">
                 <CardHeader>
                   <CardTitle className="text-base">Run Settings</CardTitle>
@@ -2456,7 +3040,7 @@ export default function EvaluationSetupPage() {
                 <CardContent className="space-y-4">
                   <div className="space-y-2 rounded-lg border border-border p-3">
                     <Label htmlFor="default-model-only-prompt" className="text-sm font-medium">
-                      Default prompt template for model-only fallback
+                      Default prompt template for raw model baselines
                     </Label>
                     <select
                       id="default-model-only-prompt"
@@ -2530,6 +3114,12 @@ export default function EvaluationSetupPage() {
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 rounded-lg border border-border p-3">
+                    <div className="md:col-span-2">
+                      <p className="text-sm font-medium text-foreground">Run Controls</p>
+                      <p className="text-xs text-muted-foreground">
+                        Run Controls affect all benchmark execution. Multi-step workflows consume more API calls and may require longer delays.
+                      </p>
+                    </div>
                     <div className="space-y-2">
                       <Label htmlFor="batch-delay-ms" className="text-sm font-medium">Delay between calls (ms)</Label>
                       <Input
@@ -2537,6 +3127,17 @@ export default function EvaluationSetupPage() {
                         type="number"
                         value={batchDelayMs}
                         onChange={(event) => setBatchDelayMs(event.target.value)}
+                        min="0"
+                        step="500"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="workflow-step-delay-ms" className="text-sm font-medium">Delay between workflow steps (ms)</Label>
+                      <Input
+                        id="workflow-step-delay-ms"
+                        type="number"
+                        value={workflowStepDelayMs}
+                        onChange={(event) => setWorkflowStepDelayMs(event.target.value)}
                         min="0"
                         step="500"
                       />
@@ -2552,6 +3153,66 @@ export default function EvaluationSetupPage() {
                         max="5"
                       />
                     </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="retry-backoff-mode" className="text-sm font-medium">Retry backoff mode</Label>
+                      <select
+                        id="retry-backoff-mode"
+                        value={retryBackoffMode}
+                        onChange={(event) => setRetryBackoffMode(event.target.value as RunControls["retryBackoffMode"])}
+                        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                      >
+                        <option value="provider_hint">Provider hint</option>
+                        <option value="exponential">Exponential</option>
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="max-output-tokens" className="text-sm font-medium">Max output tokens</Label>
+                      <Input
+                        id="max-output-tokens"
+                        type="number"
+                        value={maxOutputTokens}
+                        onChange={(event) => setMaxOutputTokens(event.target.value)}
+                        min="100"
+                        max="2000"
+                        step="100"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="stop-failure-rate" className="text-sm font-medium">Stop after failure rate (%)</Label>
+                      <Input
+                        id="stop-failure-rate"
+                        type="number"
+                        value={stopAfterFailureRatePercent}
+                        onChange={(event) => setStopAfterFailureRatePercent(event.target.value)}
+                        min="0"
+                        max="100"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="max-configs-per-run" className="text-sm font-medium">Max configs per run</Label>
+                      <Input
+                        id="max-configs-per-run"
+                        type="number"
+                        value={maxConfigsPerRun}
+                        onChange={(event) => setMaxConfigsPerRun(event.target.value)}
+                        min="1"
+                        max="100"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between rounded-lg border border-border p-3">
+                      <div>
+                        <Label className="text-sm font-medium">Compact prompt mode</Label>
+                        <p className="text-xs text-muted-foreground">Use shorter provider outputs for batch runs.</p>
+                      </div>
+                      <Switch checked={compactPromptMode} onCheckedChange={setCompactPromptMode} />
+                    </div>
+                    <div className="flex items-center justify-between rounded-lg border border-border p-3">
+                      <div>
+                        <Label className="text-sm font-medium">Continue on error</Label>
+                        <p className="text-xs text-muted-foreground">Keep partial successful results visible.</p>
+                      </div>
+                      <Switch checked={continueOnError} onCheckedChange={setContinueOnError} />
+                    </div>
                     <p className="md:col-span-2 text-xs text-muted-foreground">
                       Free/on-demand provider tiers may rate-limit larger runs. Use fewer cases/models or increase delay.
                     </p>
@@ -2560,7 +3221,7 @@ export default function EvaluationSetupPage() {
                   <div className="flex items-center justify-between py-2">
                     <div>
                       <Label className="text-sm font-medium">Store outputs</Label>
-                      <p className="text-xs text-muted-foreground">Save all model responses to database</p>
+                      <p className="text-xs text-muted-foreground">Store outputs in browser session for this demo</p>
                     </div>
                     <Switch checked={storeOutputs} onCheckedChange={setStoreOutputs} />
                   </div>
@@ -2568,21 +3229,169 @@ export default function EvaluationSetupPage() {
                   <div className="flex items-center justify-between py-2">
                     <div>
                       <Label className="text-sm font-medium">Generate summary report</Label>
-                      <p className="text-xs text-muted-foreground">Create PDF report after completion</p>
+                      <p className="text-xs text-muted-foreground">Generate report page</p>
                     </div>
                     <Switch checked={generateReport} onCheckedChange={setGenerateReport} />
                   </div>
                 </CardContent>
               </Card>
+              )}
             </div>
           </div>
+          )}
 
           {/* Configuration Summary */}
-          <Card id="configuration-summary" className="mt-6 max-w-7xl scroll-mt-24">
+          {activeTab === "summary" && (
+          <Card id="configuration-summary" className="mx-auto mt-6 max-w-5xl scroll-mt-24">
             <CardHeader>
-              <CardTitle className="text-base">Configuration Summary</CardTitle>
+              <CardTitle className="text-base">Planned Benchmark Run</CardTitle>
+              <CardDescription>Preview benchmark configurations, run controls, and request shape before execution</CardDescription>
             </CardHeader>
             <CardContent>
+              <div className="mb-6 grid grid-cols-1 gap-3 md:grid-cols-3">
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-xs text-muted-foreground">Provider</p>
+                  <p className="text-sm font-medium">{selectedProviderLabel}</p>
+                </div>
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-xs text-muted-foreground">Selected cases</p>
+                  <p className="text-sm font-medium">{summaryCaseCount}</p>
+                </div>
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-xs text-muted-foreground">Selected model count</p>
+                  <p className="text-sm font-medium">{selectedModels.length}</p>
+                </div>
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-xs text-muted-foreground">Model-only configs</p>
+                  <p className="text-sm font-medium">{modelOnlyConfigCount}</p>
+                </div>
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-xs text-muted-foreground">Workflow configs</p>
+                  <p className="text-sm font-medium">{workflowConfigCount}</p>
+                </div>
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-xs text-muted-foreground">Total benchmark configs</p>
+                  <p className="text-sm font-medium">{summaryBenchmarkConfigs.length}</p>
+                </div>
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-xs text-muted-foreground">Estimated LLM calls</p>
+                  <p className="text-sm font-medium">{summaryEstimatedCalls}</p>
+                </div>
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-xs text-muted-foreground">Estimated risk level</p>
+                  <p className="text-sm font-medium capitalize">{summaryRiskLevel}</p>
+                </div>
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-xs text-muted-foreground">Run Controls</p>
+                  <p className="text-sm font-medium">{summaryRunControls.delayBetweenCallsMs} ms / {summaryRunControls.maxRetries} retries</p>
+                </div>
+              </div>
+
+              <div className="mb-6 rounded-lg border border-border p-3">
+                <p className="mb-2 text-xs font-medium text-muted-foreground">Config list</p>
+                <div className="flex flex-wrap gap-2">
+                  {summaryBenchmarkConfigs.length > 0 ? (
+                    summaryBenchmarkConfigs.map((config) => (
+                      <Badge key={config.configId} variant={config.configType === "workflow" ? "secondary" : "outline"}>
+                        {config.label}
+                      </Badge>
+                    ))
+                  ) : (
+                    <span className="text-sm text-muted-foreground">No configs selected</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="mb-6 rounded-lg border border-border p-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowRequestPayload((current) => !current)}
+                  disabled={Boolean(!hasMounted)}
+                >
+                  {showRequestPayload ? "Hide request payload" : "Show request payload"}
+                </Button>
+                {showRequestPayload ? (
+                  <pre className="mt-3 max-h-96 overflow-auto rounded-md bg-muted p-3 text-xs">
+                    {JSON.stringify(summaryRequestPayload, null, 2)}
+                  </pre>
+                ) : null}
+              </div>
+
+              {showBenchmarkProgress ? (
+                <div className="mb-6 rounded-lg border border-border p-4">
+                  <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">Benchmark Progress</p>
+                      <p className="text-xs text-muted-foreground">{benchmarkProgress.currentStatus}</p>
+                    </div>
+                    <Badge variant={benchmarkProgress.currentStatus === "Benchmark failed" ? "destructive" : "outline"}>
+                      {benchmarkProgress.progressPercent}%
+                    </Badge>
+                  </div>
+
+                  <Progress value={benchmarkProgress.progressPercent} className="mb-4" />
+
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                    <div className="rounded-md bg-muted/40 p-3">
+                      <p className="text-xs text-muted-foreground">Elapsed time</p>
+                      <p className="text-sm font-medium">{formatDuration(benchmarkProgress.elapsedSeconds)}</p>
+                    </div>
+                    <div className="rounded-md bg-muted/40 p-3">
+                      <p className="text-xs text-muted-foreground">Estimated remaining</p>
+                      <p className="text-sm font-medium">
+                        {benchmarkProgress.isRunning
+                          ? formatDuration(benchmarkProgress.estimatedRemainingSeconds)
+                          : benchmarkProgress.currentStatus === "Benchmark completed"
+                            ? "0s"
+                            : "N/A"}
+                      </p>
+                    </div>
+                    <div className="rounded-md bg-muted/40 p-3">
+                      <p className="text-xs text-muted-foreground">Estimated LLM calls</p>
+                      <p className="text-sm font-medium">{benchmarkProgress.estimatedTotalCalls}</p>
+                    </div>
+                    <div className="rounded-md bg-muted/40 p-3">
+                      <p className="text-xs text-muted-foreground">Benchmark configs</p>
+                      <p className="text-sm font-medium">{summaryBenchmarkConfigs.length}</p>
+                    </div>
+                    <div className="rounded-md bg-muted/40 p-3">
+                      <p className="text-xs text-muted-foreground">Cases</p>
+                      <p className="text-sm font-medium">{summaryCaseCount}</p>
+                    </div>
+                    <div className="rounded-md bg-muted/40 p-3">
+                      <p className="text-xs text-muted-foreground">Estimated steps</p>
+                      <p className="text-sm font-medium">{benchmarkProgress.estimatedTotalSteps || summaryEstimatedSteps}</p>
+                    </div>
+                  </div>
+
+                  {(benchmarkProgress.currentCaseLabel || benchmarkProgress.currentConfigLabel) ? (
+                    <div className="mt-3 rounded-md border border-border p-3 text-xs text-muted-foreground">
+                      {benchmarkProgress.currentCaseLabel ? <p>Starting case: {benchmarkProgress.currentCaseLabel}</p> : null}
+                      {benchmarkProgress.currentConfigLabel ? <p>Starting config: {benchmarkProgress.currentConfigLabel}</p> : null}
+                    </div>
+                  ) : null}
+
+                  {benchmarkProgress.warning ? (
+                    <p className="mt-3 text-sm text-amber-600">{benchmarkProgress.warning}</p>
+                  ) : null}
+
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    {benchmarkResultsReady ? (
+                      <Button type="button" className="gap-2" onClick={() => router.push("/benchmark-results")}>
+                        View Benchmark Results
+                      </Button>
+                    ) : null}
+                    {!benchmarkProgress.isRunning && benchmarkProgress.startedAt ? (
+                      <Button type="button" variant="outline" onClick={resetBenchmarkProgress}>
+                        Reset progress
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
               <div className="flex flex-wrap gap-6">
                 <div>
                   <p className="text-xs font-medium text-muted-foreground mb-2">Provider</p>
@@ -2677,17 +3486,30 @@ export default function EvaluationSetupPage() {
                 </div>
                 <div>
                   <p className="text-xs font-medium text-muted-foreground mb-2">Evaluation Criteria</p>
-                  <div className="flex flex-wrap gap-2">
-                    {selectedCriteria.length > 0 ? (
-                      selectedCriteria.map(id => {
-                        const criteria = evaluationCriteria.find(c => c.id === id)
-                        return criteria ? (
-                          <Badge key={id} variant="secondary">{criteria.name}</Badge>
-                        ) : null
-                      })
-                    ) : (
-                      <span className="text-sm text-muted-foreground">No criteria selected</span>
-                    )}
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap gap-2">
+                      {activeScoringCriteria.length > 0 ? (
+                        activeScoringCriteria.map((criterion) => (
+                          <Badge key={criterion.id} variant="secondary">
+                            {criterion.name}: {criterion.weight}
+                          </Badge>
+                        ))
+                      ) : (
+                        <span className="text-sm text-muted-foreground">No scoring criteria enabled</span>
+                      )}
+                    </div>
+                    {reportOnlyCriteria.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {reportOnlyCriteria.map((criterion) => (
+                          <Badge key={criterion.id} variant="outline">
+                            Report-only: {criterion.name}
+                          </Badge>
+                        ))}
+                      </div>
+                    ) : null}
+                    <p className="text-xs text-muted-foreground">
+                      Active scoring weight: {activeScoringWeight}. Weights are normalized during ranking.
+                    </p>
                   </div>
                 </div>
                 <div>
@@ -2696,7 +3518,10 @@ export default function EvaluationSetupPage() {
                     <Badge variant="outline">{selectedBenchmarkCaseIds.length || benchmarkCases.length} benchmark cases</Badge>
                     {batchRun && <Badge variant="outline">Batch</Badge>}
                     <Badge variant="outline">{summaryDelayMs} ms delay</Badge>
+                    <Badge variant="outline">{summaryRunControls.delayBetweenWorkflowStepsMs} ms step delay</Badge>
                     <Badge variant="outline">{summaryMaxRetries} retries</Badge>
+                    <Badge variant="outline">{summaryRunControls.maxOutputTokens} max tokens</Badge>
+                    <Badge variant="outline">{summaryRunControls.retryBackoffMode}</Badge>
                     {storeOutputs && <Badge variant="outline">Store outputs</Badge>}
                     {generateReport && <Badge variant="outline">Report</Badge>}
                   </div>
@@ -2723,6 +3548,7 @@ export default function EvaluationSetupPage() {
               </p>
             </CardContent>
           </Card>
+          )}
         </main>
       </div>
     </div>

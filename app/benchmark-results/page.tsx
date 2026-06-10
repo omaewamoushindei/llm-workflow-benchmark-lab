@@ -27,6 +27,9 @@ type BatchEvaluationResponse = {
   providerId: "openrouter" | "groq"
   caseCount: number
   modelCount: number
+  selectedModelCount?: number
+  configCount?: number
+  totalConfigCount?: number
   cases: Array<{
     caseId: string
     title: string
@@ -332,7 +335,8 @@ export default function BenchmarkResultsPage() {
               </div>
 
               <p className="text-sm text-muted-foreground mb-6">
-                Batch {batchResponse.batchId} | {batchResponse.caseCount} cases | {batchResponse.modelCount} workflow/configs
+                Batch {batchResponse.batchId} | {batchResponse.caseCount} cases |{" "}
+                {batchResponse.totalConfigCount ?? batchResponse.configCount ?? batchResponse.modelCount} benchmark configs
               </p>
 
               <Card className="mb-6">
