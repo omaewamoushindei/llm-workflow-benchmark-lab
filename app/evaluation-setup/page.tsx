@@ -26,6 +26,16 @@ import {
 import { DEFAULT_EVALUATION_WORKFLOWS } from "@/lib/evaluation-workflows"
 import { DEFAULT_PROMPT_TEMPLATES, getDefaultPromptTemplate } from "@/lib/prompt-templates"
 import type { BenchmarkConfig, EvaluationConfig, EvaluationWorkflow, PromptTemplate, RunControls, WorkflowStep, WorkflowType } from "@/lib/types"
+import {
+  appendBenchmarkRunHistory,
+  createWorkspaceExport,
+  detectApiKeys,
+  readBenchmarkRunHistory,
+  stableStringify,
+  toBenchmarkRunHistoryEntry,
+  type WorkspaceConflictAction,
+  writeBenchmarkRunHistory,
+} from "@/lib/workspace-sharing"
 import { 
   Play, 
   Save, 
@@ -231,10 +241,255 @@ const CUSTOM_BENCHMARK_CASES_STORAGE_KEY = "customBenchmarkCases"
 const DEFAULT_MODEL_ONLY_PROMPT_TEMPLATE_ID = "default-baseline-pct"
 const WORKFLOW_LIBRARY_LIMIT = 25
 
+type CategoryExportType = "promptTemplates" | "evaluationWorkflows" | "customBenchmarkCases"
+
+type CategoryImportItem = PromptTemplate | EvaluationWorkflow | BenchmarkCase
+
+type CategoryImportConflict = {
+  id: string
+  importedId: string
+  importedName: string
+  matchType: "id" | "name"
+  summary: string
+  defaultAction: WorkspaceConflictAction
+}
+
+type CategoryImportDraft = {
+  type: CategoryExportType
+  rawText: string
+  items: CategoryImportItem[]
+  conflicts: CategoryImportConflict[]
+  apiKeysDetected: boolean
+}
+
+type CategoryExportPayload = {
+  version: "1.0"
+  type: CategoryExportType
+  exportedAt: string
+  appName: "PCT Stewardship Evaluator"
+  data: Partial<Record<CategoryExportType, unknown[]>>
+}
+
 function mapLegacyPromptStrategyToTemplateId(value: unknown): string {
   if (value === "structured" || value === "json") return "default-structured-pct-json"
   if (value === "verification" || value === "multistep") return "default-verification-checklist"
   return DEFAULT_MODEL_ONLY_PROMPT_TEMPLATE_ID
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function getCategoryItemId(item: CategoryImportItem): string {
+  return item.id
+}
+
+function getCategoryItemName(item: CategoryImportItem): string {
+  return "name" in item ? item.name : item.title
+}
+
+function getCategoryContent(item: CategoryImportItem, type: CategoryExportType): unknown {
+  if (type === "customBenchmarkCases") return (item as BenchmarkCase).caseData
+  return item
+}
+
+function categoryItemsEqual(a: CategoryImportItem, b: CategoryImportItem, type: CategoryExportType): boolean {
+  return stableStringify(getCategoryContent(a, type)) === stableStringify(getCategoryContent(b, type))
+}
+
+function uniqueImportedId(base: string, existingIds: Set<string>): string {
+  const safeBase = base.replace(/[^a-zA-Z0-9._-]/g, "-") || "imported-item"
+  let candidate = `${safeBase}-imported`
+  let index = 2
+  while (existingIds.has(candidate)) {
+    candidate = `${safeBase}-imported-${index}`
+    index += 1
+  }
+  existingIds.add(candidate)
+  return candidate
+}
+
+function sanitizeImportedItem<T extends CategoryImportItem>(
+  item: T,
+  type: CategoryExportType,
+  existingIds: Set<string>,
+  forceNewId = false,
+): T {
+  const next = { ...item } as T
+  if (forceNewId || existingIds.has(getCategoryItemId(next))) {
+    next.id = uniqueImportedId(getCategoryItemId(next) || getCategoryItemName(next), existingIds)
+  } else {
+    existingIds.add(next.id)
+  }
+
+  if (type === "evaluationWorkflows") {
+    ;(next as EvaluationWorkflow).isDefault = false
+  }
+
+  return next
+}
+
+function isPromptTemplate(value: unknown): value is PromptTemplate {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.id === "string" &&
+    typeof value.name === "string" &&
+    typeof value.description === "string" &&
+    typeof value.text === "string" &&
+    (value.expectedOutputSchema === "pct_json" ||
+      value.expectedOutputSchema === "free_text" ||
+      value.expectedOutputSchema === "verification_json") &&
+    typeof value.isDefault === "boolean" &&
+    typeof value.updatedAt === "string"
+  )
+}
+
+function isEvaluationWorkflow(value: unknown): value is EvaluationWorkflow {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.id === "string" &&
+    typeof value.name === "string" &&
+    typeof value.description === "string" &&
+    typeof value.isDefault === "boolean" &&
+    Array.isArray(value.steps)
+  )
+}
+
+function isBenchmarkCase(value: unknown): value is BenchmarkCase {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.id === "string" &&
+    typeof value.title === "string" &&
+    (value.sourceType === "synthetic_algorithm_case" || value.sourceType === "thermo_case_adapted") &&
+    isRecord(value.caseData) &&
+    typeof value.expectedReferenceLabel === "string" &&
+    Array.isArray(value.tags)
+  )
+}
+
+function validateCategoryItems(type: CategoryExportType, items: unknown[]): CategoryImportItem[] {
+  if (type === "promptTemplates") return items.filter(isPromptTemplate)
+  if (type === "evaluationWorkflows") return items.filter(isEvaluationWorkflow)
+  return items.filter(isBenchmarkCase)
+}
+
+function buildCategoryExport(type: CategoryExportType, items: CategoryImportItem[]): CategoryExportPayload {
+  return {
+    version: "1.0",
+    type,
+    exportedAt: new Date().toISOString(),
+    appName: "PCT Stewardship Evaluator",
+    data: {
+      [type]: items,
+    },
+  }
+}
+
+function parseCategoryImport(rawText: string, expectedType: CategoryExportType): CategoryImportDraft {
+  const parsed = JSON.parse(rawText) as unknown
+  if (!isRecord(parsed)) throw new Error("Imported JSON must be an object.")
+  if (parsed.version !== "1.0") throw new Error("Unsupported import version.")
+  if (parsed.type !== expectedType) throw new Error(`Expected ${expectedType} import file.`)
+  if (!isRecord(parsed.data)) throw new Error("Import file is missing data.")
+  const rawItems = parsed.data[expectedType]
+  if (!Array.isArray(rawItems)) throw new Error(`Import file is missing ${expectedType}.`)
+
+  return {
+    type: expectedType,
+    rawText,
+    items: validateCategoryItems(expectedType, rawItems),
+    conflicts: [],
+    apiKeysDetected: detectApiKeys(parsed),
+  }
+}
+
+function buildCategoryConflicts(
+  type: CategoryExportType,
+  localItems: CategoryImportItem[],
+  importedItems: CategoryImportItem[],
+): CategoryImportConflict[] {
+  const conflicts: CategoryImportConflict[] = []
+  const byId = new Map(localItems.map((item) => [getCategoryItemId(item), item]))
+  const byName = new Map(localItems.map((item) => [getCategoryItemName(item).toLowerCase(), item]))
+
+  for (const imported of importedItems) {
+    const importedId = getCategoryItemId(imported)
+    const importedName = getCategoryItemName(imported)
+    const localById = byId.get(importedId)
+    const localByName = byName.get(importedName.toLowerCase())
+
+    if (localById && !categoryItemsEqual(localById, imported, type)) {
+      conflicts.push({
+        id: `${type}-${importedId}-id`,
+        importedId,
+        importedName,
+        matchType: "id",
+        summary: `Imported "${importedName}" has the same id as a local item but different content.`,
+        defaultAction: "keep_mine",
+      })
+      continue
+    }
+
+    if (localByName && getCategoryItemId(localByName) !== importedId && !categoryItemsEqual(localByName, imported, type)) {
+      conflicts.push({
+        id: `${type}-${importedId || importedName}-name`,
+        importedId,
+        importedName,
+        matchType: "name",
+        summary: `Imported "${importedName}" has the same name/title as a local item but different content.`,
+        defaultAction: "keep_mine",
+      })
+    }
+  }
+
+  return conflicts
+}
+
+function mergeCategoryItems<T extends CategoryImportItem>(args: {
+  type: CategoryExportType
+  localItems: T[]
+  importedItems: T[]
+  conflictActions: Record<string, WorkspaceConflictAction>
+}): T[] {
+  const existingIds = new Set(args.localItems.map((item) => item.id))
+  const next = [...args.localItems]
+
+  for (const imported of args.importedItems) {
+    const importedId = getCategoryItemId(imported)
+    const importedName = getCategoryItemName(imported)
+    const localByIdIndex = next.findIndex((item) => getCategoryItemId(item) === importedId)
+    const localByNameIndex = next.findIndex((item) => getCategoryItemName(item).toLowerCase() === importedName.toLowerCase())
+
+    if (localByIdIndex >= 0) {
+      if (categoryItemsEqual(next[localByIdIndex], imported, args.type)) continue
+      const conflictId = `${args.type}-${importedId}-id`
+      const action = args.conflictActions[conflictId] ?? "keep_mine"
+      if (action === "accept_imported") next[localByIdIndex] = imported
+      if (action === "keep_both") next.push(sanitizeImportedItem(imported, args.type, existingIds, true) as T)
+      continue
+    }
+
+    if (localByNameIndex >= 0 && !categoryItemsEqual(next[localByNameIndex], imported, args.type)) {
+      const conflictId = `${args.type}-${importedId || importedName}-name`
+      const action = args.conflictActions[conflictId] ?? "keep_mine"
+      if (action === "accept_imported") next[localByNameIndex] = sanitizeImportedItem(imported, args.type, existingIds, true) as T
+      if (action === "keep_both") next.push(sanitizeImportedItem(imported, args.type, existingIds, true) as T)
+      continue
+    }
+
+    next.push(sanitizeImportedItem(imported, args.type, existingIds) as T)
+  }
+
+  return next
+}
+
+function readRecordFromStorage(storage: Storage, key: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(storage.getItem(key) ?? "null") as unknown
+    return isRecord(parsed) ? parsed : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function getDefaultTemplateIdForWorkflow(workflowType: WorkflowType): string {
@@ -630,6 +885,11 @@ export default function EvaluationSetupPage() {
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null)
   const [benchmarkProgress, setBenchmarkProgress] = useState<BenchmarkRunProgress>(INITIAL_BENCHMARK_PROGRESS)
   const [benchmarkResultsReady, setBenchmarkResultsReady] = useState(false)
+  const [activeCategoryImportType, setActiveCategoryImportType] = useState<CategoryExportType | null>(null)
+  const [categoryImportText, setCategoryImportText] = useState("")
+  const [categoryImportDraft, setCategoryImportDraft] = useState<CategoryImportDraft | null>(null)
+  const [categoryImportActions, setCategoryImportActions] = useState<Record<string, WorkspaceConflictAction>>({})
+  const [categoryImportMessage, setCategoryImportMessage] = useState<string | null>(null)
 
   useEffect(() => {
     setHasMounted(true)
@@ -1735,6 +1995,16 @@ export default function EvaluationSetupPage() {
       window.sessionStorage.setItem("latestBatchEvaluationResponse", JSON.stringify(json))
       // TODO: include criteria settings in persisted backend batch metadata when server-side run storage is added.
       window.sessionStorage.setItem(LATEST_EVALUATION_CRITERIA_STORAGE_KEY, JSON.stringify(criteriaLibrary))
+      const runHistoryEntry = toBenchmarkRunHistoryEntry({
+        batch: json,
+        criteriaSnapshot: criteriaLibrary,
+        promptTemplatesSnapshot: promptTemplatesForRun,
+        workflowsSnapshot: workflowsForRun,
+      })
+      writeBenchmarkRunHistory(
+        window.localStorage,
+        appendBenchmarkRunHistory(readBenchmarkRunHistory(window.localStorage), runHistoryEntry),
+      )
       const completedCalls = typeof json?.estimatedCalls === "number" ? json.estimatedCalls : estimatedTotalCalls
       const completedSteps = estimatedTotalSteps
       setBenchmarkProgress((current) => ({
@@ -1771,7 +2041,274 @@ export default function EvaluationSetupPage() {
     setBenchmarkResultsReady(false)
   }
 
+  const downloadJson = (filename: string, value: unknown) => {
+    if (!hasMounted) return
+    const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = filename
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const getLocalCategoryItems = (type: CategoryExportType): CategoryImportItem[] => {
+    if (type === "promptTemplates") return promptTemplates
+    if (type === "evaluationWorkflows") return evaluationWorkflows
+    return customBenchmarkCases
+  }
+
+  const exportCategory = (type: CategoryExportType) => {
+    const filename =
+      type === "promptTemplates"
+        ? "pct-prompt-templates.json"
+        : type === "evaluationWorkflows"
+          ? "pct-evaluation-workflows.json"
+          : "pct-custom-benchmark-cases.json"
+    downloadJson(filename, buildCategoryExport(type, getLocalCategoryItems(type)))
+  }
+
+  const openCategoryImport = (type: CategoryExportType) => {
+    setActiveCategoryImportType(type)
+    setCategoryImportText("")
+    setCategoryImportDraft(null)
+    setCategoryImportActions({})
+    setCategoryImportMessage(null)
+  }
+
+  const previewCategoryImport = (type: CategoryExportType, rawText: string) => {
+    setCategoryImportText(rawText)
+    setCategoryImportMessage(null)
+    try {
+      const draft = parseCategoryImport(rawText, type)
+      const conflicts = buildCategoryConflicts(type, getLocalCategoryItems(type), draft.items)
+      setCategoryImportDraft({ ...draft, conflicts })
+      setCategoryImportActions(Object.fromEntries(conflicts.map((conflict) => [conflict.id, conflict.defaultAction])))
+      if (draft.items.length === 0) {
+        setCategoryImportMessage("No valid items found in this import file.")
+      }
+    } catch (error) {
+      setCategoryImportDraft(null)
+      setCategoryImportActions({})
+      setCategoryImportMessage(error instanceof Error ? error.message : "Could not parse import JSON.")
+    }
+  }
+
+  const handleCategoryImportFile = async (type: CategoryExportType, file: File | undefined) => {
+    if (!file) return
+    previewCategoryImport(type, await file.text())
+  }
+
+  const applyCategoryImport = () => {
+    if (!categoryImportDraft) return
+    const { type, items } = categoryImportDraft
+
+    if (type === "promptTemplates") {
+      setPromptTemplates((current) =>
+        mergeCategoryItems({
+          type,
+          localItems: current,
+          importedItems: items.filter(isPromptTemplate),
+          conflictActions: categoryImportActions,
+        }),
+      )
+    }
+
+    if (type === "evaluationWorkflows") {
+      setEvaluationWorkflows((current) =>
+        mergeCategoryItems({
+          type,
+          localItems: current,
+          importedItems: items.filter(isEvaluationWorkflow),
+          conflictActions: categoryImportActions,
+        }),
+      )
+    }
+
+    if (type === "customBenchmarkCases") {
+      const nextCases = mergeCategoryItems({
+        type,
+        localItems: customBenchmarkCases,
+        importedItems: items.filter(isBenchmarkCase),
+        conflictActions: categoryImportActions,
+      })
+      setCustomBenchmarkCases(nextCases)
+      try {
+        window.localStorage.setItem(CUSTOM_BENCHMARK_CASES_STORAGE_KEY, JSON.stringify(nextCases))
+      } catch {
+        // ignore localStorage write errors
+      }
+    }
+
+    setCategoryImportMessage(`Imported ${items.length} ${type} item${items.length === 1 ? "" : "s"}.`)
+    setCategoryImportDraft(null)
+    setCategoryImportText("")
+    setCategoryImportActions({})
+  }
+
+  const exportFullWorkspace = () => {
+    if (!hasMounted) return
+    const evaluationSettings = readRecordFromStorage(window.localStorage, EVALUATION_SETTINGS_STORAGE_KEY)
+    const latestBatchEvaluationResponse = readRecordFromStorage(window.sessionStorage, "latestBatchEvaluationResponse")
+    const latestSingleCaseExecutionResponse = readRecordFromStorage(
+      window.sessionStorage,
+      "latestSingleCaseExecutionResponse",
+    )
+
+    downloadJson(
+      "pct-workspace-export.json",
+      createWorkspaceExport({
+        customBenchmarkCases,
+        evaluationWorkflows,
+        promptTemplates,
+        evaluationCriteria: criteriaLibrary,
+        evaluationSettings,
+        benchmarkRunHistory: readBenchmarkRunHistory(window.localStorage),
+        latestBatchEvaluationResponse,
+        latestSingleCaseExecutionResponse,
+      }),
+    )
+  }
+
+  const renderCategoryImportPanel = (type: CategoryExportType) => {
+    if (activeCategoryImportType !== type) return null
+    const title =
+      type === "promptTemplates"
+        ? "Import Prompts"
+        : type === "evaluationWorkflows"
+          ? "Import Workflows"
+          : "Import Custom Cases"
+
+    return (
+      <div className="rounded-lg border border-border bg-muted/20 p-4 space-y-3">
+        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+          <div>
+            <p className="text-sm font-medium text-foreground">{title}</p>
+            <p className="text-xs text-muted-foreground">Paste JSON or upload an exported category file.</p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setActiveCategoryImportType(null)
+              setCategoryImportDraft(null)
+              setCategoryImportText("")
+              setCategoryImportMessage(null)
+            }}
+            disabled={Boolean(!hasMounted)}
+          >
+            Close
+          </Button>
+        </div>
+        <Input
+          type="file"
+          accept="application/json,.json"
+          onChange={(event) => void handleCategoryImportFile(type, event.target.files?.[0])}
+          disabled={Boolean(!hasMounted)}
+        />
+        <textarea
+          value={categoryImportText}
+          onChange={(event) => previewCategoryImport(type, event.target.value)}
+          placeholder="Paste exported JSON here"
+          className="min-h-36 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+          disabled={Boolean(!hasMounted)}
+        />
+        {categoryImportDraft?.type === type ? (
+          <div className="space-y-3">
+            {categoryImportDraft.apiKeysDetected ? (
+              <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
+                API-key-like fields were detected and ignored.
+              </p>
+            ) : null}
+            <p className="text-xs text-muted-foreground">
+              {categoryImportDraft.items.length} valid item{categoryImportDraft.items.length === 1 ? "" : "s"} found.
+            </p>
+            {categoryImportDraft.conflicts.length > 0 ? (
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-foreground">Conflict review</p>
+                {categoryImportDraft.conflicts.map((conflict) => (
+                  <div key={conflict.id} className="rounded-md border border-border p-3">
+                    <p className="text-xs text-muted-foreground">{conflict.summary}</p>
+                    <select
+                      value={categoryImportActions[conflict.id] ?? conflict.defaultAction}
+                      onChange={(event) =>
+                        setCategoryImportActions((current) => ({
+                          ...current,
+                          [conflict.id]: event.target.value as WorkspaceConflictAction,
+                        }))
+                      }
+                      className="mt-2 h-9 w-full rounded-md border border-input bg-background px-3 text-sm md:w-56"
+                    >
+                      <option value="keep_mine">Keep mine</option>
+                      <option value="accept_imported">Accept imported</option>
+                      <option value="keep_both">Keep both</option>
+                      <option value="skip_imported">Skip imported</option>
+                    </select>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">No conflicts detected.</p>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={applyCategoryImport}
+              disabled={Boolean(!hasMounted || categoryImportDraft.items.length === 0)}
+            >
+              Confirm Import
+            </Button>
+          </div>
+        ) : null}
+        {categoryImportMessage ? <p className="text-xs text-muted-foreground">{categoryImportMessage}</p> : null}
+      </div>
+    )
+  }
+
   const visibleModels = filteredModels.slice(0, visibleModelLimit)
+  const defaultBenchmarkCaseIds = new Set(benchmarkCases.map((benchmarkCase) => benchmarkCase.id))
+  const filteredDefaultBenchmarkCases = filteredBenchmarkCases.filter((benchmarkCase) =>
+    defaultBenchmarkCaseIds.has(benchmarkCase.id),
+  )
+  const filteredCustomBenchmarkCases = filteredBenchmarkCases.filter(
+    (benchmarkCase) => !defaultBenchmarkCaseIds.has(benchmarkCase.id),
+  )
+  const renderBenchmarkCaseButton = (benchmarkCase: BenchmarkCase) => {
+    const isSelected = selectedBenchmarkCaseIds.includes(benchmarkCase.id)
+
+    return (
+      <button
+        key={benchmarkCase.id}
+        type="button"
+        onClick={() => toggleBenchmarkCase(benchmarkCase.id)}
+        disabled={Boolean(!hasMounted)}
+        className={`rounded-lg border-2 p-4 text-left transition-all ${
+          isSelected
+            ? "border-primary bg-primary/5"
+            : "border-border hover:border-muted-foreground/30"
+        }`}
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className={`text-sm font-medium ${isSelected ? "text-foreground" : "text-muted-foreground"}`}>
+              {benchmarkCase.title}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {formatBenchmarkSourceType(benchmarkCase.sourceType)} | Expected: {benchmarkCase.expectedReferenceLabel}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">{benchmarkCase.tags.join(", ")}</p>
+          </div>
+          {isSelected ? (
+            <Badge variant="outline" className="bg-primary/10 text-primary border-primary/30">
+              Selected
+            </Badge>
+          ) : null}
+        </div>
+      </button>
+    )
+  }
   const hasFailedSelectedModels = selectedModels.some(
     (modelId) => modelTestResults[modelId]?.status === "failed",
   )
@@ -2194,10 +2731,35 @@ export default function EvaluationSetupPage() {
               {activeTab === "workflows" && (
               <Card id="workflow-builder" className="scroll-mt-24">
                 <CardHeader>
-                  <CardTitle className="text-base">Workflow Builder</CardTitle>
-                  <CardDescription>Create reusable linear workflows. Run limits are enforced separately in Summary.</CardDescription>
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <CardTitle className="text-base">Workflow Builder</CardTitle>
+                      <CardDescription>Create reusable linear workflows. Run limits are enforced separately in Summary.</CardDescription>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => exportCategory("evaluationWorkflows")}
+                        disabled={Boolean(!hasMounted)}
+                      >
+                        Export Workflows
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openCategoryImport("evaluationWorkflows")}
+                        disabled={Boolean(!hasMounted)}
+                      >
+                        Import Workflows
+                      </Button>
+                    </div>
+                  </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  {renderCategoryImportPanel("evaluationWorkflows")}
                   <p className="text-xs text-muted-foreground">
                     Each enabled workflow becomes one benchmark configuration when running a benchmark.
                   </p>
@@ -2604,10 +3166,47 @@ export default function EvaluationSetupPage() {
               {activeTab === "cases" && (
               <Card id="benchmark-cases" className="scroll-mt-24">
                 <CardHeader>
-                  <CardTitle className="text-base">Benchmark Case Selection</CardTitle>
-                  <CardDescription>Select cases from the benchmark library for batch evaluation</CardDescription>
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <CardTitle className="text-base">Benchmark Case Selection</CardTitle>
+                      <CardDescription>Select cases from the benchmark library for batch evaluation</CardDescription>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => router.push("/")}
+                        disabled={Boolean(!hasMounted)}
+                      >
+                        Add Case
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => exportCategory("customBenchmarkCases")}
+                        disabled={Boolean(!hasMounted)}
+                      >
+                        Export Custom Cases
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openCategoryImport("customBenchmarkCases")}
+                        disabled={Boolean(!hasMounted)}
+                      >
+                        Import Custom Cases
+                      </Button>
+                    </div>
+                  </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  {renderCategoryImportPanel("customBenchmarkCases")}
+                  <p className="text-xs text-muted-foreground">
+                    Create a manual case in Case Input, then save it to the case library for future benchmark runs.
+                  </p>
                   <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                     <div className="md:w-72">
                       <select
@@ -2645,41 +3244,34 @@ export default function EvaluationSetupPage() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 gap-3 max-h-[28rem] overflow-y-auto pr-1">
-                    {filteredBenchmarkCases.map((benchmarkCase) => {
-                      const isSelected = selectedBenchmarkCaseIds.includes(benchmarkCase.id)
+                  <div className="space-y-5 max-h-[32rem] overflow-y-auto pr-1">
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-sm font-medium text-foreground">Default Benchmark Cases</p>
+                        <p className="text-xs text-muted-foreground">Built-in Thermo Fisher adapted and synthetic algorithm cases.</p>
+                      </div>
+                      <div className="grid grid-cols-1 gap-3">
+                        {filteredDefaultBenchmarkCases.map(renderBenchmarkCaseButton)}
+                      </div>
+                    </div>
 
-                      return (
-                        <button
-                          key={benchmarkCase.id}
-                          type="button"
-                          onClick={() => toggleBenchmarkCase(benchmarkCase.id)}
-                          disabled={Boolean(!hasMounted)}
-                          className={`rounded-lg border-2 p-4 text-left transition-all ${
-                            isSelected
-                              ? "border-primary bg-primary/5"
-                              : "border-border hover:border-muted-foreground/30"
-                          }`}
-                        >
-                          <div className="flex flex-wrap items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className={`text-sm font-medium ${isSelected ? "text-foreground" : "text-muted-foreground"}`}>
-                                {benchmarkCase.title}
-                              </p>
-                              <p className="mt-1 text-xs text-muted-foreground">
-                                {formatBenchmarkSourceType(benchmarkCase.sourceType)} | Expected: {benchmarkCase.expectedReferenceLabel}
-                              </p>
-                              <p className="mt-1 text-xs text-muted-foreground">{benchmarkCase.tags.join(", ")}</p>
-                            </div>
-                            {isSelected ? (
-                              <Badge variant="outline" className="bg-primary/10 text-primary border-primary/30">
-                                Selected
-                              </Badge>
-                            ) : null}
-                          </div>
-                        </button>
-                      )
-                    })}
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-sm font-medium text-foreground">Custom Cases</p>
+                        <p className="text-xs text-muted-foreground">Browser-local cases saved from Case Input or imported here.</p>
+                      </div>
+                      {customBenchmarkCases.length === 0 ? (
+                        <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+                          No custom cases yet. Add one from Case Input.
+                        </p>
+                      ) : filteredCustomBenchmarkCases.length > 0 ? (
+                        <div className="grid grid-cols-1 gap-3">
+                          {filteredCustomBenchmarkCases.map(renderBenchmarkCaseButton)}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-muted-foreground">No custom cases match this filter.</p>
+                      )}
+                    </div>
                   </div>
 
                   {filteredBenchmarkCases.length === 0 ? (
@@ -2698,18 +3290,39 @@ export default function EvaluationSetupPage() {
                       <CardTitle className="text-base">Prompt Library</CardTitle>
                       <CardDescription>Inspect and edit local prompt templates used by future benchmark runs</CardDescription>
                     </div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={addPromptTemplate}
-                      disabled={Boolean(!hasMounted)}
-                    >
-                      Add Prompt
-                    </Button>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => exportCategory("promptTemplates")}
+                        disabled={Boolean(!hasMounted)}
+                      >
+                        Export Prompts
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openCategoryImport("promptTemplates")}
+                        disabled={Boolean(!hasMounted)}
+                      >
+                        Import Prompts
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={addPromptTemplate}
+                        disabled={Boolean(!hasMounted)}
+                      >
+                        Add Prompt
+                      </Button>
+                    </div>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  {renderCategoryImportPanel("promptTemplates")}
                   <p className="text-xs text-warning-foreground">
                     Prompt changes affect future benchmark runs only.
                   </p>
@@ -3560,6 +4173,37 @@ export default function EvaluationSetupPage() {
                 <div className="rounded-lg border border-border p-3">
                   <p className="text-xs text-muted-foreground">Run Controls</p>
                   <p className="text-sm font-medium">{summaryRunControls.delayBetweenCallsMs} ms / {summaryRunControls.maxRetries} retries</p>
+                </div>
+              </div>
+
+              <div className="mb-6 rounded-lg border border-border p-3">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Workspace Sharing</p>
+                    <p className="text-xs text-muted-foreground">
+                      Full workspace export/import, including benchmark history, is also available in Reports.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={exportFullWorkspace}
+                      disabled={Boolean(!hasMounted)}
+                    >
+                      Export Full Workspace
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => router.push("/reports")}
+                      disabled={Boolean(!hasMounted)}
+                    >
+                      Import Workspace
+                    </Button>
+                  </div>
                 </div>
               </div>
 

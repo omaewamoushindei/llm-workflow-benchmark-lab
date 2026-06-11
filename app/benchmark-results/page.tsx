@@ -237,9 +237,84 @@ function getStatusClass(match: boolean | null): string {
   return match ? "text-success" : "text-destructive"
 }
 
+function WorkflowTraceSection({
+  result,
+  traceKey,
+  expanded,
+  onToggle,
+}: {
+  result: LlmEvaluationResult
+  traceKey: string
+  expanded: boolean
+  onToggle: (traceKey: string) => void
+}) {
+  const trace = result.workflowTrace ?? []
+  if (trace.length === 0) return null
+
+  return (
+    <div className="mt-3 rounded-lg border border-border bg-muted/20 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-sm font-medium text-foreground">Workflow Execution Trace</p>
+          <p className="text-xs text-muted-foreground">
+            Final scoring uses the final workflow step output.
+          </p>
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={() => onToggle(traceKey)}>
+          {expanded ? "Hide trace" : "Show trace"}
+        </Button>
+      </div>
+
+      {expanded ? (
+        <div className="mt-3 space-y-3">
+          {trace.map((step, index) => (
+            <div key={`${traceKey}-${step.stepId}-${index}`} className="rounded-md border border-border bg-card p-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    {index + 1}. {step.stepName}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {step.stepType} | input: {step.inputSource}
+                  </p>
+                </div>
+                <Badge variant={step.parsedSuccessfully ? "secondary" : "outline"}>
+                  {step.parsedSuccessfully ? "Parsed" : "Not parsed"}
+                </Badge>
+              </div>
+
+              <div className="mt-2 grid grid-cols-1 gap-1 text-xs text-muted-foreground">
+                <p>Included previous outputs: {step.includedStepOutputIds.length > 0 ? step.includedStepOutputIds.join(", ") : "none"}</p>
+                <p>Previous output included: {step.previousStepOutputIncluded ? "Yes" : "No"}</p>
+                <p>Reference checks included: {step.referenceChecksIncluded ? "Yes" : "No"}</p>
+                <p>Model: {step.modelId ?? "N/A"}</p>
+                <p>Prompt template: {step.promptTemplateId ?? "N/A"}</p>
+                <p>Resolved input: {step.resolvedInputSummary}</p>
+              </div>
+
+              {step.outputPreview ? (
+                <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-background p-2 text-xs text-muted-foreground">
+                  {step.outputPreview}
+                </pre>
+              ) : null}
+
+              {step.error ? <p className="mt-2 text-xs text-destructive">{step.error}</p> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export default function BenchmarkResultsPage() {
   const [evaluationResponse, setEvaluationResponse] = useState<EvaluationResponse | null>(null)
   const [batchResponse, setBatchResponse] = useState<BatchEvaluationResponse | null>(null)
+  const [expandedTraceIds, setExpandedTraceIds] = useState<Record<string, boolean>>({})
+
+  const toggleTrace = (traceKey: string) => {
+    setExpandedTraceIds((current) => ({ ...current, [traceKey]: !current[traceKey] }))
+  }
 
   useEffect(() => {
     try {
@@ -416,6 +491,7 @@ export default function BenchmarkResultsPage() {
                       <p className="text-xs text-muted-foreground">{caseResult.tags.join(", ")}</p>
                       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                         {caseResult.results.map((result) => {
+                          const traceKey = `${caseResult.caseId}-${result.configId}`
                           const mismatches = getMajorMismatches(
                             result,
                             caseResult.referenceChecks,
@@ -473,6 +549,12 @@ export default function BenchmarkResultsPage() {
                                   </p>
                                 </div>
                               )}
+                              <WorkflowTraceSection
+                                result={result}
+                                traceKey={traceKey}
+                                expanded={Boolean(expandedTraceIds[traceKey])}
+                                onToggle={toggleTrace}
+                              />
                             </div>
                           )
                         })}
@@ -592,6 +674,7 @@ export default function BenchmarkResultsPage() {
           {/* Configuration Comparison */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
             {results.map((result) => {
+              const traceKey = `single-${result.configId}`
               const alignment = result.scores?.alignment ?? null
               const safety = result.scores?.safety ?? null
               const explainability = result.scores?.explainability ?? null
@@ -799,6 +882,13 @@ export default function BenchmarkResultsPage() {
                     </p>
                   </div>
                   
+                  <WorkflowTraceSection
+                    result={result}
+                    traceKey={traceKey}
+                    expanded={Boolean(expandedTraceIds[traceKey])}
+                    onToggle={toggleTrace}
+                  />
+
                   <div className="pt-3 border-t border-border space-y-3">
                     <div>
                       <div className="flex items-center justify-between mb-1">

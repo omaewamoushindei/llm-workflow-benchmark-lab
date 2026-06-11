@@ -20,6 +20,7 @@ import type {
   RunControls,
   WorkflowType,
   WorkflowStep,
+  WorkflowStepTrace,
 } from '@/lib/types'
 
 type PromptStrategy = 'Baseline Prompt' | 'Structured Prompt' | 'Verification Prompt'
@@ -523,13 +524,21 @@ class WorkflowStepExecutionError extends Error {
   failedStepName: string
   failedStepIndex: number
   retryCount: number
+  workflowTrace?: WorkflowStepTrace[]
 
-  constructor(error: unknown, failedStepName: string, failedStepIndex: number, retryCount: number) {
+  constructor(
+    error: unknown,
+    failedStepName: string,
+    failedStepIndex: number,
+    retryCount: number,
+    workflowTrace?: WorkflowStepTrace[],
+  ) {
     super(getErrorMessage(error))
     this.name = 'WorkflowStepExecutionError'
     this.failedStepName = failedStepName
     this.failedStepIndex = failedStepIndex
     this.retryCount = retryCount
+    this.workflowTrace = workflowTrace
   }
 }
 
@@ -544,6 +553,10 @@ function getFailedStepName(error: unknown): string | undefined {
 
 function getFailedStepIndex(error: unknown): number | undefined {
   return error instanceof WorkflowStepExecutionError ? error.failedStepIndex : undefined
+}
+
+function getWorkflowTrace(error: unknown): WorkflowStepTrace[] | undefined {
+  return error instanceof WorkflowStepExecutionError ? error.workflowTrace : undefined
 }
 
 function isRateLimitError(error: unknown): boolean {
@@ -862,40 +875,107 @@ Primary model output:
 ${primaryOutput}`
 }
 
-function formatReferenceContext(referenceDecision: ReferenceDecision, referenceChecks: ReferenceChecks): string {
-  return [
-    'Reference checks:',
-    `recommendation: ${referenceDecision.recommendation}`,
-    `threshold_used: ${referenceDecision.thresholdUsed ?? 'null'}`,
-    `pct_decline_percent: ${referenceDecision.pctDeclinePercent ?? 'null'}`,
-    `absolute_threshold_met: ${referenceChecks.absoluteThresholdMet ?? 'null'}`,
-    `pct_decline_threshold_met: ${referenceChecks.pctDeclineCriterionMet ?? 'null'}`,
-    `clinical_improvement_present: ${referenceChecks.clinicalImprovementPresent}`,
-    `exclusion_condition_present: ${referenceChecks.exclusionConditionPresent}`,
-    `discontinuation_gate_passed: ${referenceChecks.discontinuationGatePassed ?? 'null'}`,
-  ].join('\n')
+function formatReferenceChecksContext(referenceChecks: ReferenceChecks): string {
+  return JSON.stringify({ referenceChecks }, null, 2)
+}
+
+function previewText(value: string, limit = 500): string {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= limit) return normalized
+  return `${normalized.slice(0, limit)}...`
+}
+
+type WorkflowStepOutput = {
+  stepId: string
+  stepName: string
+  stepType: WorkflowStep['stepType']
+  output: string
+}
+
+type ResolvedWorkflowInput = {
+  prompt: string
+  summary: string
+  previousStepOutputIncluded: boolean
+  includedStepOutputIds: string[]
+  referenceChecksIncluded: boolean
+}
+
+function formatWorkflowStepOutputs(outputs: WorkflowStepOutput[]): string {
+  return outputs
+    .map((output, index) => {
+      return `Step ${index + 1} (${output.stepName}, ${output.stepId}):\n${output.output}`
+    })
+    .join('\n\n')
+}
+
+function resolveWorkflowStepInput(args: {
+  step: WorkflowStep
+  stepIndex: number
+  caseData: ClinicalCase
+  referenceChecks: ReferenceChecks
+  stepOutputs: WorkflowStepOutput[]
+}): ResolvedWorkflowInput {
+  const { step, stepIndex, caseData, referenceChecks, stepOutputs } = args
+  const caseContext = JSON.stringify(caseData, null, 2)
+  const latestOutput = stepOutputs[stepOutputs.length - 1]
+  const deterministicOutputIncluded = stepOutputs.some((output) => output.stepType === 'deterministic_precheck')
+
+  if ((step.inputSource === 'previous_step' || step.inputSource === 'combined') && stepIndex > 0 && !latestOutput) {
+    throw new Error(`Missing previous step output for step ${step.name}.`)
+  }
+
+  if (step.inputSource === 'previous_step') {
+    return {
+      prompt: `Previous step output (${latestOutput?.stepName ?? 'none'}):\n${latestOutput?.output ?? ''}`,
+      summary: latestOutput
+        ? `Immediate previous step output included: ${latestOutput.stepName}.`
+        : 'No previous step output was available.',
+      previousStepOutputIncluded: Boolean(latestOutput),
+      includedStepOutputIds: latestOutput ? [latestOutput.stepId] : [],
+      referenceChecksIncluded: latestOutput?.stepType === 'deterministic_precheck',
+    }
+  }
+
+  if (step.inputSource === 'reference_checks') {
+    return {
+      prompt: `Deterministic reference checks:\n${formatReferenceChecksContext(referenceChecks)}`,
+      summary: 'Deterministic reference checks only.',
+      previousStepOutputIncluded: false,
+      includedStepOutputIds: [],
+      referenceChecksIncluded: true,
+    }
+  }
+
+  if (step.inputSource === 'combined') {
+    return {
+      prompt: `Case data:\n${caseContext}\n\nPrevious workflow step outputs:\n${formatWorkflowStepOutputs(stepOutputs)}`,
+      summary: `Case data plus ${stepOutputs.length} previous step output${stepOutputs.length === 1 ? '' : 's'}.`,
+      previousStepOutputIncluded: stepOutputs.length > 0,
+      includedStepOutputIds: stepOutputs.map((output) => output.stepId),
+      referenceChecksIncluded: deterministicOutputIncluded,
+    }
+  }
+
+  return {
+    prompt: `Case data:\n${caseContext}`,
+    summary: 'Original case data and case context only.',
+    previousStepOutputIncluded: false,
+    includedStepOutputIds: [],
+    referenceChecksIncluded: false,
+  }
 }
 
 function buildStepPrompt(args: {
   step: WorkflowStep
   caseData: ClinicalCase
-  referenceDecision: ReferenceDecision
   referenceChecks: ReferenceChecks
-  previousOutput: string
+  stepIndex: number
+  stepOutputs: WorkflowStepOutput[]
 }): string {
-  const { step, caseData, referenceDecision, referenceChecks, previousOutput } = args
+  const { step, caseData, referenceChecks, stepIndex, stepOutputs } = args
   const promptStrategy = getPromptStrategyForStep(step)
   const basePrompt = buildEvaluationPrompt(caseData, promptStrategy, step.promptTemplateText)
-  const referenceContext = formatReferenceContext(referenceDecision, referenceChecks)
-
-  const context = (() => {
-    if (step.inputSource === 'previous_step') return `Previous step output:\n${previousOutput || 'None'}`
-    if (step.inputSource === 'reference_checks') return referenceContext
-    if (step.inputSource === 'combined') {
-      return `${referenceContext}\n\nPrevious step output:\n${previousOutput || 'None'}`
-    }
-    return ''
-  })()
+  const resolvedInput = resolveWorkflowStepInput({ step, stepIndex, caseData, referenceChecks, stepOutputs })
 
   return `${basePrompt}
 
@@ -903,7 +983,9 @@ Workflow step:
 - Step name: ${step.name}
 - Step type: ${step.stepType}
 - Input source: ${step.inputSource}
-${context ? `\nAdditional workflow context:\n${context}` : ''}
+
+Resolved workflow input:
+${resolvedInput.prompt}
 
 Return the JSON object for this step.`
 }
@@ -916,31 +998,81 @@ async function executeWorkflow(args: {
   referenceDecision: ReferenceDecision
   referenceChecks: ReferenceChecks
   runControls: RunControls
-}): Promise<{ finalRawOutput: string; rawOutput: string }> {
-  const { providerId, apiKey, config, caseData, referenceDecision, referenceChecks, runControls } = args
+}): Promise<{ finalRawOutput: string; rawOutput: string; trace: WorkflowStepTrace[] }> {
+  const { providerId, apiKey, config, caseData, referenceChecks, runControls } = args
   const workflow = config.workflow
   if (!workflow) {
     throw new Error('Workflow config missing workflow definition')
   }
 
   let previousOutput = ''
-  const stepOutputs: Array<{ stepId: string; stepName: string; stepType: string; output: string }> = []
+  const stepOutputs: WorkflowStepOutput[] = []
+  const trace: WorkflowStepTrace[] = []
 
   for (const [index, step] of workflow.steps.entries()) {
     if (stepOutputs.length > 0 && runControls.delayBetweenWorkflowStepsMs > 0) {
       await sleep(runControls.delayBetweenWorkflowStepsMs)
     }
 
+    let resolvedInput: ResolvedWorkflowInput
+    try {
+      resolvedInput = resolveWorkflowStepInput({ step, stepIndex: index, caseData, referenceChecks, stepOutputs })
+    } catch (error) {
+      const failedTrace: WorkflowStepTrace = {
+        stepId: step.id,
+        stepName: step.name,
+        stepType: step.stepType,
+        modelId: step.modelId,
+        promptTemplateId: step.promptTemplateId,
+        inputSource: step.inputSource,
+        resolvedInputSummary: getErrorMessage(error),
+        previousStepOutputIncluded: false,
+        includedStepOutputIds: [],
+        referenceChecksIncluded: false,
+        parsedSuccessfully: false,
+        error: getErrorMessage(error),
+      }
+      throw new WorkflowStepExecutionError(error, step.name, index, 0, [...trace, failedTrace])
+    }
+
     if (step.stepType === 'deterministic_precheck') {
-      previousOutput = formatReferenceContext(referenceDecision, referenceChecks)
+      previousOutput = formatReferenceChecksContext(referenceChecks)
       stepOutputs.push({ stepId: step.id, stepName: step.name, stepType: step.stepType, output: previousOutput })
+      trace.push({
+        stepId: step.id,
+        stepName: step.name,
+        stepType: step.stepType,
+        modelId: step.modelId,
+        promptTemplateId: step.promptTemplateId,
+        inputSource: step.inputSource,
+        resolvedInputSummary: resolvedInput.summary,
+        previousStepOutputIncluded: resolvedInput.previousStepOutputIncluded,
+        includedStepOutputIds: resolvedInput.includedStepOutputIds,
+        referenceChecksIncluded: true,
+        outputPreview: previewText(previousOutput),
+        parsedSuccessfully: true,
+      })
       continue
     }
 
-    if (!step.modelId) {
-      previousOutput = previousOutput || formatReferenceContext(referenceDecision, referenceChecks)
-      stepOutputs.push({ stepId: step.id, stepName: step.name, stepType: step.stepType, output: previousOutput })
-      continue
+    const modelId = step.modelId || getPrimaryModelId(config)
+    if (!modelId) {
+      const error = new Error(`Workflow step "${step.name}" is missing a model.`)
+      const failedTrace: WorkflowStepTrace = {
+        stepId: step.id,
+        stepName: step.name,
+        stepType: step.stepType,
+        modelId: step.modelId,
+        promptTemplateId: step.promptTemplateId,
+        inputSource: step.inputSource,
+        resolvedInputSummary: resolvedInput.summary,
+        previousStepOutputIncluded: resolvedInput.previousStepOutputIncluded,
+        includedStepOutputIds: resolvedInput.includedStepOutputIds,
+        referenceChecksIncluded: resolvedInput.referenceChecksIncluded,
+        parsedSuccessfully: false,
+        error: error.message,
+      }
+      throw new WorkflowStepExecutionError(error, step.name, index, 0, [...trace, failedTrace])
     }
 
     try {
@@ -949,11 +1081,11 @@ async function executeWorkflow(args: {
           callProviderChatCompletion(
             config.providerId ?? providerId,
             apiKey,
-            step.modelId as string,
+            modelId,
             [
               {
                 role: 'user',
-                content: buildStepPrompt({ step, caseData, referenceDecision, referenceChecks, previousOutput }),
+                content: buildStepPrompt({ step, caseData, referenceChecks, stepIndex: index, stepOutputs }),
               },
             ],
             { temperature: 0.1, max_tokens: runControls.maxOutputTokens },
@@ -965,14 +1097,43 @@ async function executeWorkflow(args: {
         },
       )
     } catch (error) {
-      throw new WorkflowStepExecutionError(error, step.name, index, getRetryCount(error))
+      const failedTrace: WorkflowStepTrace = {
+        stepId: step.id,
+        stepName: step.name,
+        stepType: step.stepType,
+        modelId,
+        promptTemplateId: step.promptTemplateId,
+        inputSource: step.inputSource,
+        resolvedInputSummary: resolvedInput.summary,
+        previousStepOutputIncluded: resolvedInput.previousStepOutputIncluded,
+        includedStepOutputIds: resolvedInput.includedStepOutputIds,
+        referenceChecksIncluded: resolvedInput.referenceChecksIncluded,
+        parsedSuccessfully: false,
+        error: getErrorMessage(error),
+      }
+      throw new WorkflowStepExecutionError(error, step.name, index, getRetryCount(error), [...trace, failedTrace])
     }
     stepOutputs.push({ stepId: step.id, stepName: step.name, stepType: step.stepType, output: previousOutput })
+    trace.push({
+      stepId: step.id,
+      stepName: step.name,
+      stepType: step.stepType,
+      modelId,
+      promptTemplateId: step.promptTemplateId,
+      inputSource: step.inputSource,
+      resolvedInputSummary: resolvedInput.summary,
+      previousStepOutputIncluded: resolvedInput.previousStepOutputIncluded,
+      includedStepOutputIds: resolvedInput.includedStepOutputIds,
+      referenceChecksIncluded: resolvedInput.referenceChecksIncluded,
+      outputPreview: previewText(previousOutput),
+      parsedSuccessfully: parseLlmJson(previousOutput).ok,
+    })
   }
 
   return {
     finalRawOutput: previousOutput,
     rawOutput: JSON.stringify({ workflow: workflow.name, steps: stepOutputs }, null, 2),
+    trace,
   }
 }
 
@@ -1087,6 +1248,7 @@ async function buildLiveResult(args: {
       error: `Could not parse valid JSON: ${parsedJson.error}`,
       failureReason: 'unknown',
       retryCount: 0,
+      workflowTrace: workflowExecution?.trace,
     }
   }
 
@@ -1107,6 +1269,7 @@ async function buildLiveResult(args: {
       error: 'Model JSON did not match the required evaluation schema',
       failureReason: 'unknown',
       retryCount: 0,
+      workflowTrace: workflowExecution?.trace,
     }
   }
 
@@ -1125,6 +1288,7 @@ async function buildLiveResult(args: {
     rawOutput: workflowExecution?.rawOutput ?? (config.workflowType === 'verification'
       ? JSON.stringify({ primaryOutput: rawOutput, verifierOutput: finalRawOutput }, null, 2)
       : finalRawOutput),
+    workflowTrace: workflowExecution?.trace,
     scores: scoreLlmOutput(parsedOutput, referenceDecision, caseData, referenceChecks),
   }
 }
@@ -1182,6 +1346,7 @@ async function evaluateCase(args: {
         retryCount,
         failedStepName: getFailedStepName(error),
         failedStepIndex: getFailedStepIndex(error),
+        workflowTrace: getWorkflowTrace(error),
       }
 
       results.push(errorResult)

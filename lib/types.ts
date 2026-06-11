@@ -158,6 +158,22 @@ export interface RunControls {
   maxConfigsPerRun: number
 }
 
+export interface WorkflowStepTrace {
+  stepId: string
+  stepName: string
+  stepType: WorkflowStep['stepType']
+  modelId?: string
+  promptTemplateId?: string
+  inputSource: WorkflowStep['inputSource']
+  resolvedInputSummary: string
+  previousStepOutputIncluded: boolean
+  includedStepOutputIds: string[]
+  referenceChecksIncluded: boolean
+  outputPreview?: string
+  parsedSuccessfully: boolean
+  error?: string
+}
+
 export interface LlmEvaluationResult {
   configId: string
   modelLabel: string
@@ -176,6 +192,7 @@ export interface LlmEvaluationResult {
   retryCount?: number
   failedStepName?: string
   failedStepIndex?: number
+  workflowTrace?: WorkflowStepTrace[]
   scores?: {
     recommendationMatch?: number
     alignment: number

@@ -18,6 +18,7 @@ import type {
   ReferenceRecommendation,
   RunControls,
   WorkflowStep,
+  WorkflowStepTrace,
 } from '@/lib/types'
 
 type PromptStrategy = 'Baseline Prompt' | 'Structured Prompt' | 'Verification Prompt'
@@ -509,6 +510,115 @@ function getProviderLabel(providerId: LlmProviderId): string {
   return providerId === 'groq' ? 'Groq' : 'OpenRouter'
 }
 
+class WorkflowStepExecutionError extends Error {
+  failedStepName: string
+  failedStepIndex: number
+  workflowTrace?: WorkflowStepTrace[]
+
+  constructor(error: unknown, failedStepName: string, failedStepIndex: number, workflowTrace?: WorkflowStepTrace[]) {
+    super(error instanceof Error ? error.message : 'Workflow step failed.')
+    this.name = 'WorkflowStepExecutionError'
+    this.failedStepName = failedStepName
+    this.failedStepIndex = failedStepIndex
+    this.workflowTrace = workflowTrace
+  }
+}
+
+function getWorkflowTrace(error: unknown): WorkflowStepTrace[] | undefined {
+  return error instanceof WorkflowStepExecutionError ? error.workflowTrace : undefined
+}
+
+function getFailedStepName(error: unknown): string | undefined {
+  return error instanceof WorkflowStepExecutionError ? error.failedStepName : undefined
+}
+
+function getFailedStepIndex(error: unknown): number | undefined {
+  return error instanceof WorkflowStepExecutionError ? error.failedStepIndex : undefined
+}
+
+function previewText(value: string, limit = 500): string {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= limit) return normalized
+  return `${normalized.slice(0, limit)}...`
+}
+
+type WorkflowStepOutput = {
+  stepId: string
+  stepName: string
+  stepType: WorkflowStep['stepType']
+  output: string
+}
+
+type ResolvedWorkflowInput = {
+  prompt: string
+  summary: string
+  previousStepOutputIncluded: boolean
+  includedStepOutputIds: string[]
+  referenceChecksIncluded: boolean
+}
+
+function formatWorkflowStepOutputs(outputs: WorkflowStepOutput[]): string {
+  return outputs
+    .map((output, index) => `Step ${index + 1} (${output.stepName}, ${output.stepId}):\n${output.output}`)
+    .join('\n\n')
+}
+
+function resolveWorkflowStepInput(args: {
+  step: WorkflowStep
+  stepIndex: number
+  caseData: ClinicalCase
+  referenceChecks: ReferenceChecks
+  stepOutputs: WorkflowStepOutput[]
+}): ResolvedWorkflowInput {
+  const { step, stepIndex, caseData, referenceChecks, stepOutputs } = args
+  const latestOutput = stepOutputs[stepOutputs.length - 1]
+  const deterministicOutputIncluded = stepOutputs.some((output) => output.stepType === 'deterministic_precheck')
+
+  if ((step.inputSource === 'previous_step' || step.inputSource === 'combined') && stepIndex > 0 && !latestOutput) {
+    throw new Error(`Missing previous step output for step ${step.name}.`)
+  }
+
+  if (step.inputSource === 'previous_step') {
+    return {
+      prompt: `Previous step output (${latestOutput?.stepName ?? 'none'}):\n${latestOutput?.output ?? ''}`,
+      summary: latestOutput
+        ? `Immediate previous step output included: ${latestOutput.stepName}.`
+        : 'No previous step output was available.',
+      previousStepOutputIncluded: Boolean(latestOutput),
+      includedStepOutputIds: latestOutput ? [latestOutput.stepId] : [],
+      referenceChecksIncluded: latestOutput?.stepType === 'deterministic_precheck',
+    }
+  }
+
+  if (step.inputSource === 'reference_checks') {
+    return {
+      prompt: `Deterministic reference checks:\n${JSON.stringify({ referenceChecks }, null, 2)}`,
+      summary: 'Deterministic reference checks only.',
+      previousStepOutputIncluded: false,
+      includedStepOutputIds: [],
+      referenceChecksIncluded: true,
+    }
+  }
+
+  if (step.inputSource === 'combined') {
+    return {
+      prompt: `Case data:\n${JSON.stringify(caseData, null, 2)}\n\nPrevious workflow step outputs:\n${formatWorkflowStepOutputs(stepOutputs)}`,
+      summary: `Case data plus ${stepOutputs.length} previous step output${stepOutputs.length === 1 ? '' : 's'}.`,
+      previousStepOutputIncluded: stepOutputs.length > 0,
+      includedStepOutputIds: stepOutputs.map((output) => output.stepId),
+      referenceChecksIncluded: deterministicOutputIncluded,
+    }
+  }
+
+  return {
+    prompt: `Case data:\n${JSON.stringify(caseData, null, 2)}`,
+    summary: 'Original case data and case context only.',
+    previousStepOutputIncluded: false,
+    includedStepOutputIds: [],
+    referenceChecksIncluded: false,
+  }
+}
+
 async function buildProviderResult(args: {
   providerId: LlmProviderId
   config: ProviderEvaluationConfig
@@ -521,7 +631,7 @@ async function buildProviderResult(args: {
   const prompt = buildEvaluationPrompt(caseData, config.promptStrategy, config.promptTemplateText)
   const promptStrategy = getPromptStrategyLabel(config.promptStrategy)
 
-  const rawOutput = config.workflow
+  const workflowExecution = config.workflow
     ? await executeWorkflow({
         providerId,
         apiKey,
@@ -531,13 +641,17 @@ async function buildProviderResult(args: {
         referenceChecks,
         maxTokens: 1000,
       })
-    : await callProviderChatCompletion(
-        providerId,
-        apiKey,
-        config.modelId,
-        [{ role: 'user', content: prompt }],
-        { temperature: 0.1, max_tokens: 1000 },
-      )
+    : null
+
+  const rawOutput =
+    workflowExecution?.finalRawOutput ??
+    (await callProviderChatCompletion(
+      providerId,
+      apiKey,
+      config.modelId,
+      [{ role: 'user', content: prompt }],
+      { temperature: 0.1, max_tokens: 1000 },
+    ))
 
   const parsedJson = parseLlmJson(rawOutput)
   if (!parsedJson.ok) {
@@ -548,6 +662,7 @@ async function buildProviderResult(args: {
       status: 'error',
       rawOutput,
       error: `Could not parse valid JSON: ${parsedJson.error}`,
+      workflowTrace: workflowExecution?.trace,
     }
   }
 
@@ -560,6 +675,7 @@ async function buildProviderResult(args: {
       status: 'error',
       rawOutput,
       error: 'Model JSON did not match the required evaluation schema',
+      workflowTrace: workflowExecution?.trace,
     }
   }
 
@@ -574,7 +690,8 @@ async function buildProviderResult(args: {
     promptStrategy,
     status: 'success',
     parsedOutput,
-    rawOutput,
+    rawOutput: workflowExecution?.rawOutput ?? rawOutput,
+    workflowTrace: workflowExecution?.trace,
     scores: scoreLlmOutput(parsedOutput, referenceDecision, caseData, referenceChecks),
   }
 }
@@ -583,23 +700,24 @@ function buildWorkflowStepPrompt(args: {
   step: WorkflowStep
   caseData: ClinicalCase
   referenceChecks: ReferenceChecks
-  previousOutput: string
+  stepIndex: number
+  stepOutputs: WorkflowStepOutput[]
 }): string {
-  const { step, caseData, referenceChecks, previousOutput } = args
+  const { step, caseData, referenceChecks, stepIndex, stepOutputs } = args
   const basePrompt = step.promptTemplateText || buildEvaluationPrompt(caseData, step.stepType === 'verification' ? 'verification' : 'structured')
-  const referenceContext = JSON.stringify({ referenceChecks }, null, 2)
-  const caseContext = JSON.stringify(caseData, null, 2)
+  const resolvedInput = resolveWorkflowStepInput({ step, stepIndex, caseData, referenceChecks, stepOutputs })
 
-  if (step.inputSource === 'previous_step') {
-    return `${basePrompt}\n\nPrevious step output:\n${previousOutput}`
-  }
-  if (step.inputSource === 'reference_checks') {
-    return `${basePrompt}\n\nDeterministic precheck context:\n${referenceContext}`
-  }
-  if (step.inputSource === 'combined') {
-    return `${basePrompt}\n\nCase data:\n${caseContext}\n\nPrevious step output:\n${previousOutput}\n\nDeterministic precheck context:\n${referenceContext}`
-  }
-  return `${basePrompt}\n\nCase data:\n${caseContext}`
+  return `${basePrompt}
+
+Workflow step:
+- Step name: ${step.name}
+- Step type: ${step.stepType}
+- Input source: ${step.inputSource}
+
+Resolved workflow input:
+${resolvedInput.prompt}
+
+Return the JSON object for this step.`
 }
 
 async function executeWorkflow(args: {
@@ -610,41 +728,136 @@ async function executeWorkflow(args: {
   referenceDecision: ReferenceDecision
   referenceChecks: ReferenceChecks
   maxTokens: number
-}): Promise<string> {
-  const { providerId, apiKey, config, caseData, referenceDecision, referenceChecks, maxTokens } = args
+}): Promise<{ finalRawOutput: string; rawOutput: string; trace: WorkflowStepTrace[] }> {
+  const { providerId, apiKey, config, caseData, referenceChecks, maxTokens } = args
   const workflow = config.workflow
   if (!workflow) throw new Error('Execution workflow is missing workflow steps.')
 
   let previousOutput = ''
-  for (const step of workflow.steps) {
+  const stepOutputs: WorkflowStepOutput[] = []
+  const trace: WorkflowStepTrace[] = []
+
+  for (const [index, step] of workflow.steps.entries()) {
+    let resolvedInput: ResolvedWorkflowInput
+    try {
+      resolvedInput = resolveWorkflowStepInput({ step, stepIndex: index, caseData, referenceChecks, stepOutputs })
+    } catch (error) {
+      const failedTrace: WorkflowStepTrace = {
+        stepId: step.id,
+        stepName: step.name,
+        stepType: step.stepType,
+        modelId: step.modelId,
+        promptTemplateId: step.promptTemplateId,
+        inputSource: step.inputSource,
+        resolvedInputSummary: error instanceof Error ? error.message : 'Could not resolve workflow input.',
+        previousStepOutputIncluded: false,
+        includedStepOutputIds: [],
+        referenceChecksIncluded: false,
+        parsedSuccessfully: false,
+        error: error instanceof Error ? error.message : 'Could not resolve workflow input.',
+      }
+      throw new WorkflowStepExecutionError(error, step.name, index, [...trace, failedTrace])
+    }
+
     if (step.stepType === 'deterministic_precheck') {
       previousOutput = JSON.stringify({ referenceChecks }, null, 2)
+      stepOutputs.push({ stepId: step.id, stepName: step.name, stepType: step.stepType, output: previousOutput })
+      trace.push({
+        stepId: step.id,
+        stepName: step.name,
+        stepType: step.stepType,
+        modelId: step.modelId,
+        promptTemplateId: step.promptTemplateId,
+        inputSource: step.inputSource,
+        resolvedInputSummary: resolvedInput.summary,
+        previousStepOutputIncluded: resolvedInput.previousStepOutputIncluded,
+        includedStepOutputIds: resolvedInput.includedStepOutputIds,
+        referenceChecksIncluded: true,
+        outputPreview: previewText(previousOutput),
+        parsedSuccessfully: true,
+      })
       continue
     }
 
     const modelId = step.modelId || config.modelId
-    if (!modelId) throw new Error(`Workflow step "${step.name}" is missing a model.`)
+    if (!modelId) {
+      const error = new Error(`Workflow step "${step.name}" is missing a model.`)
+      const failedTrace: WorkflowStepTrace = {
+        stepId: step.id,
+        stepName: step.name,
+        stepType: step.stepType,
+        modelId: step.modelId,
+        promptTemplateId: step.promptTemplateId,
+        inputSource: step.inputSource,
+        resolvedInputSummary: resolvedInput.summary,
+        previousStepOutputIncluded: resolvedInput.previousStepOutputIncluded,
+        includedStepOutputIds: resolvedInput.includedStepOutputIds,
+        referenceChecksIncluded: resolvedInput.referenceChecksIncluded,
+        parsedSuccessfully: false,
+        error: error.message,
+      }
+      throw new WorkflowStepExecutionError(error, step.name, index, [...trace, failedTrace])
+    }
 
-    previousOutput = await callProviderChatCompletion(
-      providerId,
-      apiKey,
+    try {
+      previousOutput = await callProviderChatCompletion(
+        providerId,
+        apiKey,
+        modelId,
+        [
+          {
+            role: 'user',
+            content: buildWorkflowStepPrompt({
+              step,
+              caseData,
+              referenceChecks,
+              stepIndex: index,
+              stepOutputs,
+            }),
+          },
+        ],
+        { temperature: 0.1, max_tokens: maxTokens },
+      )
+    } catch (error) {
+      const failedTrace: WorkflowStepTrace = {
+        stepId: step.id,
+        stepName: step.name,
+        stepType: step.stepType,
+        modelId,
+        promptTemplateId: step.promptTemplateId,
+        inputSource: step.inputSource,
+        resolvedInputSummary: resolvedInput.summary,
+        previousStepOutputIncluded: resolvedInput.previousStepOutputIncluded,
+        includedStepOutputIds: resolvedInput.includedStepOutputIds,
+        referenceChecksIncluded: resolvedInput.referenceChecksIncluded,
+        parsedSuccessfully: false,
+        error: error instanceof Error ? error.message : 'Workflow provider call failed.',
+      }
+      throw new WorkflowStepExecutionError(error, step.name, index, [...trace, failedTrace])
+    }
+
+    stepOutputs.push({ stepId: step.id, stepName: step.name, stepType: step.stepType, output: previousOutput })
+    trace.push({
+      stepId: step.id,
+      stepName: step.name,
+      stepType: step.stepType,
       modelId,
-      [
-        {
-          role: 'user',
-          content: buildWorkflowStepPrompt({
-            step,
-            caseData,
-            referenceChecks,
-            previousOutput,
-          }),
-        },
-      ],
-      { temperature: 0.1, max_tokens: maxTokens },
-    )
+      promptTemplateId: step.promptTemplateId,
+      inputSource: step.inputSource,
+      resolvedInputSummary: resolvedInput.summary,
+      previousStepOutputIncluded: resolvedInput.previousStepOutputIncluded,
+      includedStepOutputIds: resolvedInput.includedStepOutputIds,
+      referenceChecksIncluded: resolvedInput.referenceChecksIncluded,
+      outputPreview: previewText(previousOutput),
+      parsedSuccessfully: parseLlmJson(previousOutput).ok,
+    })
   }
 
-  return previousOutput
+  return {
+    finalRawOutput: previousOutput,
+    rawOutput: JSON.stringify({ workflow: workflow.name, steps: stepOutputs }, null, 2),
+    trace,
+  }
 }
 
 function buildMissingApiKeyResults(configs: ProviderEvaluationConfig[]): LlmEvaluationResult[] {
@@ -705,9 +918,17 @@ async function buildProviderResults(
     return {
       configId: config.configId,
       modelLabel: config.modelLabel,
+      configLabel: config.configLabel,
+      configType: config.configType,
+      workflowName: config.workflowName,
+      workflowStepCount: config.workflowStepCount,
+      toolAssisted: config.toolAssisted,
       promptStrategy: getPromptStrategyLabel(config.promptStrategy),
       status: 'error',
       error: message,
+      failedStepName: getFailedStepName(result.reason),
+      failedStepIndex: getFailedStepIndex(result.reason),
+      workflowTrace: getWorkflowTrace(result.reason),
     }
   })
 }
