@@ -9,7 +9,7 @@ import type {
 } from './types'
 
 export const WORKSPACE_EXPORT_VERSION = '1.0'
-export const WORKSPACE_APP_NAME = 'PCT Stewardship Evaluator'
+export const WORKSPACE_APP_NAME = 'LLM Workflow Benchmark Lab'
 export const WORKSPACE_SCHEMA_VERSION = '1.0'
 export const SCORING_VERSION = '1.0'
 export const BENCHMARK_RUN_HISTORY_STORAGE_KEY = 'benchmarkRunHistory'

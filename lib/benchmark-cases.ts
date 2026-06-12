@@ -62,7 +62,7 @@ export const benchmarkCases: BenchmarkCase[] = [
     expectedReferenceLabel: 'consider_discontinuation',
     tags: ['sepsis_icu', 'pct_decline_gt_80', 'clinical_improvement_yes'],
     sourceNote:
-      'Adapted from public Thermo Fisher PCT Case Study 2; antibiotics discontinued after >80% PCT reduction and clinical improvement.',
+      'Adapted from public Thermo Fisher PCT Case Study 2; no affiliation or endorsement implied; antibiotics discontinued after >80% PCT reduction and clinical improvement.',
     limitations: [
       'Adapted source case, not a full clinical gold standard.',
       'Some clinical details, microbiology, antibiotic duration, and comorbidities are not represented.',
@@ -92,7 +92,7 @@ export const benchmarkCases: BenchmarkCase[] = [
     expectedReferenceLabel: 'clinical_review_required',
     tags: ['pneumonia', 'hemodialysis', 'renal_caution', 'clinical_review_required'],
     sourceNote:
-      'Adapted from public Thermo Fisher PCT Case Study 1; renal clearance makes this a caution case.',
+      'Adapted from public Thermo Fisher PCT Case Study 1; no affiliation or endorsement implied; renal clearance makes this a caution case.',
     limitations: [
       'Adapted source case, not a full clinical gold standard.',
       'Hemodialysis is mapped to other_caution because the current schema does not have a renal-replacement-therapy field.',
@@ -123,7 +123,7 @@ export const benchmarkCases: BenchmarkCase[] = [
     expectedReferenceLabel: 'consider_discontinuation',
     tags: ['lrti_non_icu', 'low_pct', 'clinical_improvement_yes'],
     sourceNote:
-      'Adapted from public Thermo Fisher PCT Case Study 4; low serial PCT and clinical improvement supported antibiotic discontinuation.',
+      'Adapted from public Thermo Fisher PCT Case Study 4; no affiliation or endorsement implied; low serial PCT and clinical improvement supported antibiotic discontinuation.',
     limitations: [
       'Adapted source case, not a full clinical gold standard.',
       'The app reference logic uses simplified PCT threshold and decline rules only.',
@@ -153,7 +153,7 @@ export const benchmarkCases: BenchmarkCase[] = [
     expectedReferenceLabel: 'consider_discontinuation',
     tags: ['covid', 'lrti_non_icu', 'low_pct'],
     sourceNote:
-      'Adapted from public Thermo Fisher PCT Case Study 8; antibiotics not continued due to consistently low PCT.',
+      'Adapted from public Thermo Fisher PCT Case Study 8; no affiliation or endorsement implied; antibiotics not continued due to consistently low PCT.',
     limitations: [
       'Adapted source case, not a full clinical gold standard.',
       'Clinical improvement is set to yes to match the current deterministic reference gate.',
@@ -184,7 +184,7 @@ export const benchmarkCases: BenchmarkCase[] = [
     expectedReferenceLabel: 'consider_discontinuation',
     tags: ['covid', 'lrti_non_icu', 'low_pct', 'empirical_antibiotics'],
     sourceNote:
-      'Adapted from public Thermo Fisher PCT Case Study 9; low PCT supported stopping empirical antibiotics.',
+      'Adapted from public Thermo Fisher PCT Case Study 9; no affiliation or endorsement implied; low PCT supported stopping empirical antibiotics.',
     limitations: [
       'Adapted source case, not a full clinical gold standard.',
       'Clinical improvement is set to yes so the simplified benchmark gate can evaluate discontinuation.',

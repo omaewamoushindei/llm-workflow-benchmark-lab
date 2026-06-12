@@ -8,9 +8,31 @@ __v0_jsx-dev-runtime.ts
 next.user-config.*
 
 # Environment variables
+.env
+.env.*
+.env.local
 .env*.local
+!.env.example
 
 # Common ignores
-node_modules
+node_modules/
 .next/
 .DS_Store
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build/test caches
+coverage/
+.turbo/
+.pnpm-store/
+
+# Local workspace/report exports
+*.workspace.json
+workspace-export*.json
+benchmark-export*.json

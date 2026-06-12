@@ -61,13 +61,27 @@ type ModelsResponse = {
 }
 
 type ModelTestResult = {
+  ok?: boolean
+  success?: boolean
+  providerId?: ProviderId
   modelId: string
   status: "available" | "failed"
+  latencyMs?: number
   error?: string
-  failureReason?: "needs_credits" | "provider_error" | "rate_limited" | "no_endpoint" | "unknown"
+  failureReason?:
+    | "needs_credits"
+    | "provider_error"
+    | "rate_limited"
+    | "no_endpoint"
+    | "invalid_key"
+    | "model_not_found"
+    | "unknown"
 }
 
 type ModelTestResponse = {
+  ok?: boolean
+  success?: boolean
+  providerId?: ProviderId
   results?: ModelTestResult[]
   error?: string
 }
@@ -199,6 +213,8 @@ const failureReasonLabels: Record<NonNullable<ModelTestResult["failureReason"]>,
   provider_error: "provider error",
   rate_limited: "rate limited",
   no_endpoint: "no endpoint",
+  invalid_key: "invalid key",
+  model_not_found: "model not found",
   unknown: "unknown",
 }
 
@@ -266,7 +282,7 @@ type CategoryExportPayload = {
   version: "1.0"
   type: CategoryExportType
   exportedAt: string
-  appName: "PCT Stewardship Evaluator"
+  appName: "LLM Workflow Benchmark Lab"
   data: Partial<Record<CategoryExportType, unknown[]>>
 }
 
@@ -378,7 +394,7 @@ function buildCategoryExport(type: CategoryExportType, items: CategoryImportItem
     version: "1.0",
     type,
     exportedAt: new Date().toISOString(),
-    appName: "PCT Stewardship Evaluator",
+    appName: "LLM Workflow Benchmark Lab",
     data: {
       [type]: items,
     },
@@ -1222,14 +1238,20 @@ export default function EvaluationSetupPage() {
     setModelTestError(null)
 
     try {
+      const providerKey = providerApiKeys[selectedProviderId]?.key
+      if (!providerKey) {
+        throw new Error("Connect an API key for this provider first.")
+      }
+
       const response = await fetch("/api/models/test", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          providerId: selectedProviderId,
           modelIds: selectedModels,
-          apiKey: providerApiKeys.openrouter?.key,
+          apiKey: providerKey,
         }),
       })
       const json = (await response.json()) as ModelTestResponse
@@ -2439,7 +2461,7 @@ export default function EvaluationSetupPage() {
         <div className="flex-1 flex flex-col overflow-hidden">
           <Header
             title="Evaluation Setup"
-            description="Configure LLMs and evaluation parameters for benchmark testing"
+            description="Advanced evaluation workspace for configuring providers, prompts, workflows, benchmark cases, scoring criteria, and run controls."
           />
 
           <main className="flex-1 overflow-y-auto p-6">
@@ -2476,7 +2498,7 @@ export default function EvaluationSetupPage() {
       <div className="flex-1 flex flex-col overflow-hidden">
         <Header 
           title="Evaluation Setup" 
-          description="Configure LLMs and evaluation parameters for benchmark testing"
+          description="Advanced evaluation workspace for configuring providers, prompts, workflows, benchmark cases, scoring criteria, and run controls."
         />
         
         <main className="flex-1 overflow-y-auto p-6">
@@ -3205,7 +3227,7 @@ export default function EvaluationSetupPage() {
                 <CardContent className="space-y-4">
                   {renderCategoryImportPanel("customBenchmarkCases")}
                   <p className="text-xs text-muted-foreground">
-                    Create a manual case in Case Input, then save it to the case library for future benchmark runs.
+                    Create a manual case in Single Case Execution, then save it to the case library for future benchmark runs.
                   </p>
                   <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                     <div className="md:w-72">
@@ -3248,7 +3270,9 @@ export default function EvaluationSetupPage() {
                     <div className="space-y-3">
                       <div>
                         <p className="text-sm font-medium text-foreground">Default Benchmark Cases</p>
-                        <p className="text-xs text-muted-foreground">Built-in Thermo Fisher adapted and synthetic algorithm cases.</p>
+                        <p className="text-xs text-muted-foreground">
+                          Built-in public Thermo Fisher-adapted and synthetic algorithm cases; no endorsement implied.
+                        </p>
                       </div>
                       <div className="grid grid-cols-1 gap-3">
                         {filteredDefaultBenchmarkCases.map(renderBenchmarkCaseButton)}
@@ -3258,11 +3282,11 @@ export default function EvaluationSetupPage() {
                     <div className="space-y-3">
                       <div>
                         <p className="text-sm font-medium text-foreground">Custom Cases</p>
-                        <p className="text-xs text-muted-foreground">Browser-local cases saved from Case Input or imported here.</p>
+                        <p className="text-xs text-muted-foreground">Browser-local cases saved from Single Case Execution or imported here.</p>
                       </div>
                       {customBenchmarkCases.length === 0 ? (
                         <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-                          No custom cases yet. Add one from Case Input.
+                          No custom cases yet. Add one from Single Case Execution.
                         </p>
                       ) : filteredCustomBenchmarkCases.length > 0 ? (
                         <div className="grid grid-cols-1 gap-3">

@@ -1,0 +1,253 @@
+{
+  "version": "1.0",
+  "appName": "LLM Workflow Benchmark Lab",
+  "exportedAt": "2026-06-12T00:00:00.000Z",
+  "exportedBy": "project-sample",
+  "data": {
+    "customBenchmarkCases": [
+      {
+        "id": "demo-lrti-improving-decline",
+        "title": "Demo synthetic LRTI improving with PCT decline",
+        "sourceType": "synthetic_algorithm_case",
+        "description": "Safe synthetic case for reviewer demos. Clinical improvement and >80% PCT decline exercise the discontinuation-consideration rule path.",
+        "caseData": {
+          "patientAge": 61,
+          "sex": "female",
+          "symptoms": "Improving lower respiratory symptoms after empiric antibiotics.",
+          "infectionContext": "lrti_non_icu",
+          "clinicalImprovement": "yes",
+          "currentAntibioticStatus": "empirical",
+          "antibioticsDurationDays": 3,
+          "peakPct": 2,
+          "currentPct": 0.3,
+          "wbc": null,
+          "crp": null,
+          "exclusionCondition": "none",
+          "clinicalNotes": "Synthetic demo case. No exclusion or caution condition recorded.",
+          "caseDescription": "LRTI/non-ICU synthetic case with current PCT 0.3 ng/mL and 85% decline from peak."
+        },
+        "expectedReferenceLabel": "consider_discontinuation",
+        "tags": ["demo", "synthetic", "lrti_non_icu", "pct_decline_gt_80"],
+        "sourceNote": "Generated from deterministic PCT benchmark logic for public demo use.",
+        "limitations": [
+          "Synthetic case, not real patient data.",
+          "Designed only to exercise benchmark logic in the prototype."
+        ],
+        "createdAt": "2026-06-12T00:00:00.000Z",
+        "updatedAt": "2026-06-12T00:00:00.000Z"
+      },
+      {
+        "id": "demo-lrti-not-improving-decline",
+        "title": "Demo synthetic LRTI not improving despite PCT decline",
+        "sourceType": "synthetic_algorithm_case",
+        "description": "Safe synthetic case where PCT decline is met but clinical improvement is absent.",
+        "caseData": {
+          "patientAge": null,
+          "sex": "",
+          "symptoms": "Persistent fever and respiratory symptoms.",
+          "infectionContext": "lrti_non_icu",
+          "clinicalImprovement": "no",
+          "currentAntibioticStatus": "empirical",
+          "antibioticsDurationDays": 3,
+          "peakPct": 2,
+          "currentPct": 0.3,
+          "wbc": null,
+          "crp": null,
+          "exclusionCondition": "none",
+          "clinicalNotes": "Synthetic demo case. PCT decline is present, but clinical improvement is absent.",
+          "caseDescription": "LRTI/non-ICU synthetic case with 85% PCT decline but no clinical improvement."
+        },
+        "expectedReferenceLabel": "continue_antibiotics",
+        "tags": ["demo", "synthetic", "lrti_non_icu", "clinical_improvement_no"],
+        "sourceNote": "Generated from deterministic PCT benchmark logic for public demo use.",
+        "limitations": [
+          "Synthetic case, not real patient data.",
+          "Designed to show that PCT decline alone does not pass the discontinuation gate."
+        ],
+        "createdAt": "2026-06-12T00:00:00.000Z",
+        "updatedAt": "2026-06-12T00:00:00.000Z"
+      },
+      {
+        "id": "demo-safety-exception-endocarditis",
+        "title": "Demo synthetic endocarditis caution",
+        "sourceType": "synthetic_algorithm_case",
+        "description": "Safe synthetic case where low PCT values are blocked by an exclusion/caution condition.",
+        "caseData": {
+          "patientAge": null,
+          "sex": "",
+          "symptoms": "Infection case with endocarditis caution flag.",
+          "infectionContext": "sepsis_icu",
+          "clinicalImprovement": "yes",
+          "currentAntibioticStatus": "targeted",
+          "antibioticsDurationDays": 5,
+          "peakPct": 4,
+          "currentPct": 0.4,
+          "wbc": null,
+          "crp": null,
+          "exclusionCondition": "endocarditis",
+          "clinicalNotes": "Synthetic demo case. Exclusion/caution condition should require clinical review.",
+          "caseDescription": "Sepsis/ICU synthetic case with current PCT below 0.5 ng/mL and endocarditis caution."
+        },
+        "expectedReferenceLabel": "clinical_review_required",
+        "tags": ["demo", "synthetic", "sepsis_icu", "safety_exception"],
+        "sourceNote": "Generated from deterministic PCT benchmark logic for public demo use.",
+        "limitations": [
+          "Synthetic case, not real patient data.",
+          "Designed to exercise exclusion/caution handling."
+        ],
+        "createdAt": "2026-06-12T00:00:00.000Z",
+        "updatedAt": "2026-06-12T00:00:00.000Z"
+      }
+    ],
+    "evaluationWorkflows": [
+      {
+        "id": "demo-structured-single-step",
+        "name": "Demo Structured Single-Step",
+        "description": "One-step structured JSON workflow for reviewer demos.",
+        "isDefault": false,
+        "steps": [
+          {
+            "id": "demo-structured-call",
+            "name": "Structured JSON call",
+            "stepType": "llm_call",
+            "promptTemplateId": "demo-structured-pct-json",
+            "inputSource": "case_data"
+          }
+        ]
+      },
+      {
+        "id": "demo-a1-a4-pct-pipeline",
+        "name": "Demo A1-A4 PCT Pipeline",
+        "description": "Four-step intake, reasoning, kinetic analysis, and final report workflow for demos.",
+        "isDefault": false,
+        "steps": [
+          {
+            "id": "demo-a1-intake-validation",
+            "name": "A1 Intake and validation",
+            "stepType": "llm_call",
+            "promptTemplateId": "demo-a1-intake-validation",
+            "inputSource": "case_data"
+          },
+          {
+            "id": "demo-a2-clinical-reasoning",
+            "name": "A2 Clinical reasoning",
+            "stepType": "llm_call",
+            "promptTemplateId": "demo-a2-clinical-reasoning",
+            "inputSource": "combined"
+          },
+          {
+            "id": "demo-a3-kinetic-analysis",
+            "name": "A3 Kinetic analysis",
+            "stepType": "verification",
+            "promptTemplateId": "demo-a3-kinetic-context-analysis",
+            "inputSource": "combined"
+          },
+          {
+            "id": "demo-a4-final-report",
+            "name": "A4 Final structured report",
+            "stepType": "final_report",
+            "promptTemplateId": "demo-a4-final-structured-report",
+            "inputSource": "combined"
+          }
+        ]
+      }
+    ],
+    "promptTemplates": [
+      {
+        "id": "demo-baseline-pct",
+        "name": "Demo Baseline PCT Prompt",
+        "description": "Simple baseline prompt for public demo workspace imports.",
+        "text": "Use the provided PCT benchmark case data. Return valid JSON using the app scoring schema. Do not provide medical advice. Do not use or infer a hidden reference answer.",
+        "expectedOutputSchema": "pct_json",
+        "isDefault": false,
+        "updatedAt": "2026-06-12T00:00:00.000Z"
+      },
+      {
+        "id": "demo-structured-pct-json",
+        "name": "Demo Structured PCT JSON Prompt",
+        "description": "Criterion-by-criterion prompt for public demo workspace imports.",
+        "text": "Evaluate the case against these benchmark rules only: clinical improvement is required; LRTI/non-ICU threshold is 0.25 ng/mL; sepsis/ICU threshold is 0.5 ng/mL; PCT decline greater than 80% is a trend criterion; exclusion/caution conditions require clinical review. Return only valid JSON with recommendation, structured criteria, calculation_audit, pct_interpretation, reasoning_summary, safety_warnings, missing_information, and confidence. Do not include medical advice.",
+        "expectedOutputSchema": "pct_json",
+        "isDefault": false,
+        "updatedAt": "2026-06-12T00:00:00.000Z"
+      },
+      {
+        "id": "demo-a1-intake-validation",
+        "name": "Demo A1 Intake and Validation Prompt",
+        "description": "Extract benchmark-critical fields and missing data.",
+        "text": "A1 task: extract infection context, current antibiotic status, clinical improvement, peak PCT, current PCT, and exclusion/caution condition. Identify missing benchmark-critical fields. Do not make a final recommendation. Return valid JSON.",
+        "expectedOutputSchema": "pct_json",
+        "isDefault": false,
+        "updatedAt": "2026-06-12T00:00:00.000Z"
+      },
+      {
+        "id": "demo-a2-clinical-reasoning",
+        "name": "Demo A2 Clinical Reasoning Prompt",
+        "description": "Apply PCT benchmark rules without final recommendation.",
+        "text": "A2 task: apply PCT benchmark rules using case data and prior output. Distinguish absolute threshold, PCT decline, clinical improvement, and exclusion/caution gate. Do not produce the final recommendation. Return valid JSON.",
+        "expectedOutputSchema": "pct_json",
+        "isDefault": false,
+        "updatedAt": "2026-06-12T00:00:00.000Z"
+      },
+      {
+        "id": "demo-a3-kinetic-context-analysis",
+        "name": "Demo A3 Kinetic and Context Analysis Prompt",
+        "description": "Calculate PCT decline and gate criteria.",
+        "text": "A3 task: calculate PCT decline as ((peak_pct - current_pct) / peak_pct) * 100 when possible. Assess current PCT against the applicable threshold, PCT decline >80%, clinical improvement, and exclusion/caution gate. Do not produce the final recommendation. Return valid JSON.",
+        "expectedOutputSchema": "pct_json",
+        "isDefault": false,
+        "updatedAt": "2026-06-12T00:00:00.000Z"
+      },
+      {
+        "id": "demo-a4-final-structured-report",
+        "name": "Demo A4 Final Structured Report Prompt",
+        "description": "Final parseable scoring output for demo workflow.",
+        "text": "A4 task: synthesize case data and prior workflow outputs. Return only parseable JSON using the app scoring schema: recommendation, absolute_threshold_met, pct_decline_threshold_met, clinical_improvement_required, clinical_improvement_present, exclusion_condition_present, safety_gate_passed, calculation_audit, pct_interpretation, threshold_used, pct_decline_calculated, reasoning_summary, safety_warnings, missing_information, confidence. Do not say stop antibiotics immediately. Do not use or infer a hidden reference answer.",
+        "expectedOutputSchema": "pct_json",
+        "isDefault": false,
+        "updatedAt": "2026-06-12T00:00:00.000Z"
+      }
+    ],
+    "evaluationCriteria": [
+      {
+        "id": "demo-reporting-scope-note",
+        "name": "Demo Reporting Scope Note",
+        "description": "Report-only reminder that this demo workspace evaluates deterministic-rule alignment, not clinical validity.",
+        "shortDescription": "Report-only public demo limitation note.",
+        "detailedDescription": "This criterion is included in the sample workspace to document scope. It is report-only and does not affect scoring.",
+        "scoringMethod": "report_only",
+        "enabled": true,
+        "weight": 0,
+        "isDefault": false,
+        "isReportOnly": true,
+        "sourceOfTruth": ["README disclaimer", "docs/EVALUATION_METHODOLOGY.md"],
+        "requiredModelFields": [],
+        "referenceFieldsUsed": [],
+        "subcriteria": [],
+        "penalties": [],
+        "caps": [],
+        "configurableParameters": ["None"],
+        "limitations": [
+          "This sample workspace does not include clinical validation.",
+          "No provider outputs or run history are included."
+        ],
+        "examplePass": "Reviewer imports the workspace and understands it is a benchmark prototype.",
+        "exampleFail": "Reviewer interprets the workspace as clinical decision-support validation.",
+        "details": "Report-only criterion. Weight 0. No scoring formula is attached.",
+        "updatedAt": "2026-06-12T00:00:00.000Z"
+      }
+    ],
+    "evaluationSettings": {
+      "providerId": "groq",
+      "selectedModelIds": [],
+      "defaultPromptTemplateId": "demo-baseline-pct",
+      "selectedWorkflowIds": ["demo-structured-single-step", "demo-a1-a4-pct-pipeline"],
+      "includeRawModelBaselines": true,
+      "includeStructuredPromptBaselines": true,
+      "includeEnabledWorkflows": true
+    },
+    "benchmarkRunHistory": [],
+    "latestBatchEvaluationResponse": null,
+    "latestSingleCaseExecutionResponse": null
+  }
+}

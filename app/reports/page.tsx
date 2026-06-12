@@ -832,8 +832,8 @@ export default function ReportsPage() {
 
       <div className="flex-1 flex flex-col">
         <Header
-          title="Suitability Report"
-          description="LLM Configuration Assessment for PCT-Guided Antibiotic Stewardship"
+          title="Benchmark Reports"
+          description="Reports summarize benchmark alignment, safety signals, consistency, workflow traces, and limitations."
         />
 
         <main className="flex-1 p-6 overflow-auto">
@@ -1589,7 +1589,7 @@ export default function ReportsPage() {
                 </li>
                 <li className="flex items-start gap-2">
                   <CheckCircle2 className="h-3.5 w-3.5 text-primary mt-0.5 shrink-0" />
-                  Thermo Fisher adapted cases are used for realism but are not complete clinical gold-standard patient records.
+                  Thermo Fisher adapted cases are used for realism but are not complete clinical gold-standard patient records; no affiliation or endorsement is implied.
                 </li>
                 <li className="flex items-start gap-2">
                   <CheckCircle2 className="h-3.5 w-3.5 text-primary mt-0.5 shrink-0" />

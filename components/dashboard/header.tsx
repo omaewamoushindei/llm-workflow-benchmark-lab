@@ -17,6 +17,9 @@ export function Header({ title, description }: HeaderProps) {
       </div>
       
       <div className="flex items-center gap-2">
+        <div className="hidden rounded-md border border-border bg-muted px-2.5 py-1 text-xs text-muted-foreground lg:block">
+          Prototype benchmark platform. Not for clinical use.
+        </div>
         <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground">
           <HelpCircle className="w-5 h-5" />
           <span className="sr-only">Help</span>
@@ -30,7 +33,7 @@ export function Header({ title, description }: HeaderProps) {
           <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center">
             <User className="w-4 h-4 text-primary" />
           </div>
-          <span className="text-sm font-medium">Clinician</span>
+          <span className="text-sm font-medium">Evaluator</span>
         </Button>
       </div>
     </header>

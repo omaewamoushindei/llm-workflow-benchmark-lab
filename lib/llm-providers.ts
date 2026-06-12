@@ -217,7 +217,7 @@ export async function callProviderChatCompletion(
 
   if (providerId === "openrouter") {
     headers["HTTP-Referer"] = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000"
-    headers["X-OpenRouter-Title"] = "PCT Stewardship Evaluator"
+    headers["X-OpenRouter-Title"] = "LLM Workflow Benchmark Lab"
   }
 
   const response = await fetch(provider.chatCompletionsEndpoint, {

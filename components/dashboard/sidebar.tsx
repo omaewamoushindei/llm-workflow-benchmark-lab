@@ -10,7 +10,7 @@ import {
 } from "lucide-react"
 
 const menuItems = [
-  { name: "Case Input", icon: ClipboardList, href: "/" },
+  { name: "Single Case Execution", icon: ClipboardList, href: "/" },
   { name: "Evaluation Setup", icon: Settings2, href: "/evaluation-setup" },
   { name: "Benchmark Results", icon: BarChart3, href: "/benchmark-results" },
   { name: "Reports", icon: FileText, href: "/reports" },
@@ -20,7 +20,7 @@ interface SidebarProps {
   activePage?: string
 }
 
-export function Sidebar({ activePage = "Case Input" }: SidebarProps) {
+export function Sidebar({ activePage = "Single Case Execution" }: SidebarProps) {
   return (
     <aside className="w-64 border-r border-border bg-card flex flex-col">
       <div className="p-4 border-b border-border">
@@ -29,8 +29,8 @@ export function Sidebar({ activePage = "Case Input" }: SidebarProps) {
             <Activity className="w-5 h-5 text-primary-foreground" />
           </div>
           <div>
-            <h1 className="font-semibold text-sm text-foreground">PCT Stewardship</h1>
-            <p className="text-xs text-muted-foreground">Evaluator</p>
+            <h1 className="font-semibold text-sm text-foreground">LLM Workflow</h1>
+            <p className="text-xs text-muted-foreground">Benchmark Lab</p>
           </div>
         </div>
       </div>
@@ -60,7 +60,15 @@ export function Sidebar({ activePage = "Case Input" }: SidebarProps) {
       </nav>
       
       <div className="p-3 border-t border-border">
-        <div className="px-3 py-2 rounded-lg bg-muted">
+        <div className="space-y-2 rounded-lg bg-muted px-3 py-2">
+          <div>
+            <p className="text-xs font-medium text-muted-foreground">Example workspace</p>
+            <p className="text-xs text-foreground">PCT-guided antibiotic stewardship</p>
+          </div>
+          <div>
+            <p className="text-xs font-medium text-muted-foreground">Disclaimer</p>
+            <p className="text-xs text-foreground">Prototype benchmark platform. Not for clinical use.</p>
+          </div>
           <p className="text-xs font-medium text-muted-foreground">Version</p>
           <p className="text-sm text-foreground">1.0.0-beta</p>
         </div>

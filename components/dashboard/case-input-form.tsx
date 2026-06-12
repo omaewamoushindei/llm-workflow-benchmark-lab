@@ -113,7 +113,7 @@ function getBenchmarkSourceBadge(sourceType: BenchmarkCase["sourceType"]): strin
 
 function getBenchmarkSourceTransparencyNote(sourceType: BenchmarkCase["sourceType"]): string {
   return sourceType === "thermo_case_adapted"
-    ? "Adapted from public Thermo Fisher PCT case study. Not a complete clinical gold standard."
+    ? "Adapted from public Thermo Fisher PCT case study. Not a complete clinical gold standard; no affiliation or endorsement implied."
     : "Generated from deterministic PCT discontinuation logic for systematic testing."
 }
 
@@ -668,11 +668,11 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
         id: `custom-${Date.now()}`,
         title,
         sourceType: "synthetic_algorithm_case" as const,
-        description: caseData.caseDescription || caseData.clinicalNotes || "Manual case saved from Case Input.",
+        description: caseData.caseDescription || caseData.clinicalNotes || "Manual case saved from Single Case Execution.",
         caseData,
         expectedReferenceLabel: referenceDecision.recommendation,
         tags: ["custom", caseData.infectionContext, referenceDecision.recommendation],
-        sourceNote: "Saved from manual Case Input execution page.",
+        sourceNote: "Saved from manual Single Case Execution page.",
         limitations: "User-entered case. Structured fields should be reviewed before batch benchmarking.",
         createdAt: now,
         updatedAt: now,
@@ -743,7 +743,7 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
         <CardHeader className="pb-4">
           <CardTitle className="text-lg">Execution Configuration</CardTitle>
           <CardDescription>
-            Choose one ranked benchmark configuration for this manual case
+            Select the evaluated model, prompt, or workflow configuration for this one-case demo
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -853,8 +853,8 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
               <FlaskConical className="w-5 h-5 text-primary" />
             </div>
             <div>
-              <CardTitle className="text-lg">Patient Information</CardTitle>
-              <CardDescription>Enter patient demographics and clinical parameters</CardDescription>
+              <CardTitle className="text-lg">Required PCT Logic Fields</CardTitle>
+              <CardDescription>These structured inputs drive the deterministic reference checks</CardDescription>
             </div>
           </div>
         </CardHeader>
@@ -863,10 +863,17 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
             Structured fields drive reference checks. Description text is provided as additional context to the model.
           </p>
 
-          {/* Demographics Row */}
+          <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs text-muted-foreground">
+            Required benchmark inputs are clinical setting, PCT values, antibiotic status, clinical improvement, and
+            exclusion/caution status. Age, sex, labs, and narrative text are optional context only.
+          </div>
+
+          <details className="rounded-lg border border-border bg-muted/20 p-3">
+            <summary className="cursor-pointer text-sm font-medium text-foreground">Optional Context</summary>
+            <div className="mt-3 space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="patientAge">Patient Age</Label>
+              <Label htmlFor="patientAge">Age (optional)</Label>
               <Input
                 id="patientAge"
                 type="number"
@@ -876,7 +883,7 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="sex">Sex</Label>
+              <Label htmlFor="sex">Sex (optional)</Label>
               <Select value={caseData.sex} onValueChange={(v) => updateCaseData({ sex: v })}>
                 <SelectTrigger id="sex">
                   <SelectValue placeholder="Select sex" />
@@ -892,7 +899,7 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
 
           {/* Clinical Info */}
           <div className="space-y-2">
-            <Label htmlFor="symptoms">Symptoms</Label>
+              <Label htmlFor="symptoms">Renal impairment / hemodialysis, symptoms, or other optional context</Label>
             <Input
               id="symptoms"
               placeholder="e.g., Fever, cough, fatigue"
@@ -900,10 +907,19 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
               onChange={(e) => updateCaseData({ symptoms: e.target.value })}
             />
           </div>
+            </div>
+          </details>
+
+          <div>
+            <h4 className="text-sm font-medium text-foreground">Required PCT Logic Fields</h4>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Age and sex are not used as required deterministic criteria.
+            </p>
+          </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="infectionContext">Infection Context</Label>
+              <Label htmlFor="infectionContext">Clinical setting / infection context</Label>
               <Select
                 value={caseData.infectionContext}
                 onValueChange={(v) => updateCaseData({ infectionContext: v as ClinicalCase["infectionContext"] })}
@@ -912,14 +928,14 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
                   <SelectValue placeholder="Select context" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="lrti_non_icu">LRTI (Non-ICU)</SelectItem>
-                  <SelectItem value="sepsis_icu">Sepsis (ICU)</SelectItem>
-                  <SelectItem value="other_or_unclear">Other / Unclear</SelectItem>
+                  <SelectItem value="lrti_non_icu">LRTI / non-ICU</SelectItem>
+                  <SelectItem value="sepsis_icu">Sepsis / ICU</SelectItem>
+                  <SelectItem value="other_or_unclear">Other / uncertain</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="antibioticStatus">Current Antibiotic Status</Label>
+              <Label htmlFor="antibioticStatus">Patient currently on antibiotics?</Label>
               <Select
                 value={caseData.currentAntibioticStatus}
                 onValueChange={(v) => updateCaseData({ currentAntibioticStatus: v })}
@@ -928,11 +944,11 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
                   <SelectValue placeholder="Select status" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="not-started">Not Started</SelectItem>
-                  <SelectItem value="empirical">Empirical Therapy</SelectItem>
-                  <SelectItem value="targeted">Targeted Therapy</SelectItem>
-                  <SelectItem value="de-escalation">De-escalation</SelectItem>
-                  <SelectItem value="completed">Completed Course</SelectItem>
+                  <SelectItem value="not-started">No / not started</SelectItem>
+                  <SelectItem value="empirical">Yes / empirical therapy</SelectItem>
+                  <SelectItem value="targeted">Yes / targeted therapy</SelectItem>
+                  <SelectItem value="de-escalation">Yes / de-escalation</SelectItem>
+                  <SelectItem value="completed">Completed course</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -940,7 +956,7 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="clinicalImprovement">Clinical Improvement</Label>
+              <Label htmlFor="clinicalImprovement">Clinical improvement present?</Label>
               <Select
                 value={caseData.clinicalImprovement}
                 onValueChange={(v) =>
@@ -979,7 +995,7 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
             <div className="grid grid-cols-3 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="peakPct">
-                  Peak PCT
+                  Peak or previous PCT value
                   <span className="text-muted-foreground font-normal ml-1">ng/mL</span>
                 </Label>
                 <Input
@@ -993,7 +1009,7 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
               </div>
               <div className="space-y-2">
                 <Label htmlFor="currentPct">
-                  Current PCT
+                  Current PCT value
                   <span className="text-muted-foreground font-normal ml-1">ng/mL</span>
                 </Label>
                 <Input
@@ -1037,7 +1053,7 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="exclusionCondition">Exclusion / Caution Condition</Label>
+                <Label htmlFor="exclusionCondition">Exclusion or caution condition present?</Label>
                 <Select
                   value={caseData.exclusionCondition}
                   onValueChange={(v) =>
@@ -1068,10 +1084,10 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
 
           {/* Clinical Notes */}
           <div className="space-y-2">
-            <Label htmlFor="clinicalNotes">Clinical Notes</Label>
+            <Label htmlFor="clinicalNotes">Brief clinical notes</Label>
             <Textarea
               id="clinicalNotes"
-              placeholder="Additional clinical observations, history, or relevant context..."
+              placeholder="Short notes relevant to clinical improvement, source control, cautions, or uncertainty..."
               rows={3}
               value={caseData.clinicalNotes}
               onChange={(e) => updateCaseData({ clinicalNotes: e.target.value })}
@@ -1080,7 +1096,7 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
         </CardContent>
       </Card>
 
-      {/* Case Description Card */}
+      {/* Optional context card */}
       <Card>
         <CardHeader className="pb-4">
           <div className="flex items-center gap-3">
@@ -1088,17 +1104,17 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
               <FileText className="w-5 h-5 text-accent" />
             </div>
             <div>
-              <CardTitle className="text-lg">Case Description</CardTitle>
-              <CardDescription>Paste a full case description or upload a file</CardDescription>
+              <CardTitle className="text-lg">Optional Case Context</CardTitle>
+              <CardDescription>Add narrative context or upload a text file</CardDescription>
             </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="caseDescription">Paste case description</Label>
+            <Label htmlFor="caseDescription">Other context / case description</Label>
             <Textarea
               id="caseDescription"
-              placeholder="Paste the full clinical case description here..."
+              placeholder="Paste supporting case context here..."
               rows={4}
               value={caseData.caseDescription}
               onChange={(e) => updateCaseData({ caseDescription: e.target.value })}
@@ -1146,7 +1162,7 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
           {isRunning ? "Running..." : "Run This Case"}
         </Button>
         <Button className="gap-2" size="lg" variant="outline" onClick={saveToCaseLibrary} disabled={isRunning}>
-          Save to Case Library
+          Save as Benchmark Case
         </Button>
         <div className="sm:w-56">
           <Select
@@ -1198,6 +1214,9 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
       {saveCaseMessage ? (
         <p className="text-sm text-muted-foreground">{saveCaseMessage}</p>
       ) : null}
+      <p className="text-xs text-muted-foreground">
+        Only saved benchmark cases can be selected later for batch benchmark reports.
+      </p>
 
       {selectedBenchmarkCase && (
         <Card>
@@ -1254,13 +1273,15 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
         <div className="space-y-4">
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium">Reference Decision</CardTitle>
-              <CardDescription>Deterministic benchmark proxy (not medical advice)</CardDescription>
+              <CardTitle className="text-sm font-medium">Result Summary</CardTitle>
+              <CardDescription>
+                Output label, key reference checks, safety notes, and limitations for this single-case run
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               <div className="flex flex-wrap gap-x-6 gap-y-2">
                 <div>
-                  <span className="text-muted-foreground">Recommendation: </span>
+                  <span className="text-muted-foreground">Output label / recommendation category: </span>
                   <span className="font-medium text-foreground">{evaluationResponse.referenceDecision.recommendation}</span>
                 </div>
                 <div>
@@ -1333,9 +1354,16 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
               </div>
 
               <div>
-                <p className="text-muted-foreground">Explanation</p>
+                <p className="text-muted-foreground">Short Explanation</p>
                 <p className="mt-1 text-muted-foreground leading-relaxed">
                   {evaluationResponse.referenceDecision.explanation}
+                </p>
+              </div>
+              <div className="rounded-md border border-border bg-muted/30 p-3">
+                <p className="text-muted-foreground">Limitations</p>
+                <p className="mt-1 text-muted-foreground leading-relaxed">
+                  Prototype benchmark output only. This is not clinical advice, and this single-case execution is not
+                  included in aggregate benchmark reports unless saved as a benchmark case and selected in a batch run.
                 </p>
               </div>
             </CardContent>
@@ -1343,7 +1371,7 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
 
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium">LLM Results</CardTitle>
+              <CardTitle className="text-sm font-medium">Model Output</CardTitle>
               <CardDescription>{getLlmResultsDescription(evaluationResponse)}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -1519,7 +1547,7 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
                       ) : null}
 
                       <div>
-                        <p className="text-muted-foreground">Reasoning Summary</p>
+                        <p className="text-muted-foreground">Short Explanation</p>
                         <p className="mt-1 text-muted-foreground leading-relaxed">
                           {result.parsedOutput.reasoning_summary}
                         </p>
@@ -1530,9 +1558,54 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
                         <p className="mt-1">
                           {result.parsedOutput.safety_warnings.length > 0
                             ? result.parsedOutput.safety_warnings.join(" | ")
-                            : "—"}
+                            : "N/A"}
                         </p>
                       </div>
+
+                      {result.workflowTrace && result.workflowTrace.length > 0 ? (
+                        <details className="rounded-md border border-border bg-muted/20 p-3">
+                          <summary className="cursor-pointer text-sm font-medium text-foreground">
+                            Technical trace
+                          </summary>
+                          <div className="mt-3 space-y-3">
+                            {result.workflowTrace.map((step, index) => (
+                              <div
+                                key={`${result.configId}-${step.stepId}-${index}`}
+                                className="rounded-md border border-border bg-background p-3"
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <p className="text-sm font-medium text-foreground">
+                                    {index + 1}. {step.stepName}
+                                  </p>
+                                  <span className="text-xs text-muted-foreground">
+                                    Parsed: {step.parsedSuccessfully ? "Yes" : "No"}
+                                  </span>
+                                </div>
+                                <div className="mt-2 grid grid-cols-1 gap-2 text-xs text-muted-foreground md:grid-cols-2">
+                                  <p>Input source: {step.inputSource}</p>
+                                  <p>Model: {step.modelId ?? "N/A"}</p>
+                                  <p>Prompt: {step.promptTemplateId ?? "N/A"}</p>
+                                  <p>
+                                    Previous outputs:{" "}
+                                    {step.includedStepOutputIds.length > 0
+                                      ? step.includedStepOutputIds.join(", ")
+                                      : "None"}
+                                  </p>
+                                </div>
+                                <p className="mt-2 text-xs text-muted-foreground">{step.resolvedInputSummary}</p>
+                                {step.outputPreview ? (
+                                  <p className="mt-2 text-xs text-muted-foreground wrap-break-word">
+                                    Output preview: {step.outputPreview}
+                                  </p>
+                                ) : null}
+                                {step.error ? (
+                                  <p className="mt-2 text-xs text-destructive wrap-break-word">Error: {step.error}</p>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      ) : null}
                     </div>
                   ) : result.status === "error" ? (
                     <div className="space-y-1 text-sm">

@@ -356,7 +356,7 @@ export default function BenchmarkResultsPage() {
       <div className="flex-1 flex flex-col">
         <Header 
           title="Benchmark Results" 
-          description="Comparative analysis of LLM configurations for PCT-guided stewardship"
+          description="Compare model, prompt, and workflow configurations across benchmark cases. Scores measure alignment with reference logic, not clinical validity."
         />
         
         <main className="flex-1 p-6 overflow-auto">
@@ -569,12 +569,12 @@ export default function BenchmarkResultsPage() {
               <CardHeader>
                 <CardTitle className="text-base">No evaluation run available yet.</CardTitle>
                 <CardDescription>
-                  Run a single evaluation on the Case Input page to populate benchmark results.
+                  Run a single evaluation on the Single Case Execution page to populate results.
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 <Button asChild>
-                  <Link href="/">Back to Case Input</Link>
+                  <Link href="/">Back to Single Case Execution</Link>
                 </Button>
               </CardContent>
             </Card>

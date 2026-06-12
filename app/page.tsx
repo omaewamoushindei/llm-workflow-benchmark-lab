@@ -40,16 +40,22 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-background flex">
-      <Sidebar activePage="Case Input" />
+      <Sidebar activePage="Single Case Execution" />
       
       <div className="flex-1 flex flex-col">
         <Header 
-          title="Clinical Case Input" 
-          description="Enter patient data for PCT-guided evaluation"
+          title="Single Case Execution" 
+          description="Run one simplified PCT case through a selected evaluated configuration. Prototype only, not for clinical use."
         />
         
         <main className="flex-1 p-6 overflow-auto">
           <div className="max-w-6xl mx-auto">
+            <div className="mb-6 rounded-lg border border-border bg-muted/30 p-4">
+              <p className="text-sm font-medium text-foreground">Example workspace: PCT-guided antibiotic stewardship</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Single-case execution is separate from aggregate benchmark reports unless saved as a benchmark case.
+              </p>
+            </div>
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               {/* Main Form - Takes 2 columns */}
               <div className="lg:col-span-2">

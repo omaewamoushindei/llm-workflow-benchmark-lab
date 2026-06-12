@@ -7,9 +7,8 @@ const _geist = Geist({ subsets: ["latin"] });
 const _geistMono = Geist_Mono({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: 'PCT Stewardship Evaluator - Clinical AI Evaluation Platform',
-  description: 'AI-powered clinical evaluation platform for antibiotic stewardship using procalcitonin (PCT) biomarker analysis',
-  generator: 'v0.app',
+  title: 'LLM Workflow Benchmark Lab',
+  description: 'Prototype for benchmarking LLM prompts, models, and workflows against deterministic reference logic.',
   icons: {
     icon: [
       {
