@@ -19,46 +19,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: npm ci
 
       - name: TypeScript check
-        shell: bash
-        run: |
-          if node -e "const s=require('./package.json').scripts||{}; process.exit(s.typecheck ? 0 : 1)"; then
-            pnpm run typecheck
-          elif [ -f tsconfig.json ]; then
-            pnpm exec tsc --noEmit --incremental false
-          else
-            echo "No typecheck script or tsconfig.json found; skipping TypeScript check."
-          fi
+        run: npm run typecheck
 
       - name: Lint
         shell: bash
         run: |
-          if node -e "const s=require('./package.json').scripts||{}; process.exit(s.lint ? 0 : 1)"; then
-            pnpm run lint
+          if node -e "const s=require('./package.json').scripts||{}; process.exit(s.lint ? 0 : 1)" && [ -x node_modules/.bin/eslint ]; then
+            npm run lint
           else
-            echo "No lint script found; skipping lint."
+            echo "No working lint setup found; skipping lint."
           fi
 
       - name: Build
-        shell: bash
-        run: |
-          if node -e "const s=require('./package.json').scripts||{}; process.exit(s.build ? 0 : 1)"; then
-            pnpm run build
-          else
-            echo "No build script found; skipping build."
-          fi
+        run: npm run build

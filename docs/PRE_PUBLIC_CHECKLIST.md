@@ -39,5 +39,7 @@ Use this checklist before making the repository public or sharing it with recrui
 git status
 git diff --cached
 git grep -n "gsk_\|sk-or-\|OPENROUTER_API_KEY\|GROQ_API_KEY"
-.\node_modules\.bin\tsc.cmd --noEmit --incremental false
+npm install
+npm run typecheck
+npm run build
 ```

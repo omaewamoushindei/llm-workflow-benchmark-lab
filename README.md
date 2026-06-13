@@ -33,43 +33,27 @@ LLM workflows are hard to trust when prompts, models, and workflow steps behave 
 ## Architecture
 
 ```mermaid
-flowchart LR
-  Browser[Browser UI<br/>Next.js App Router + React] --> Api[Next.js API Routes]
-  Api --> ProviderLayer[Provider Abstraction]
-  ProviderLayer --> OpenRouter[OpenRouter]
-  ProviderLayer --> Groq[Groq]
-
-  Browser --> Reference[Reference Evaluator<br/>PCT deterministic logic]
-  Browser --> Scoring[Scoring + Reporting]
-  Api --> Reference
-  Api --> Scoring
-
-  Browser --> Storage[Browser Storage<br/>localStorage/sessionStorage<br/>MVP workspace state]
+flowchart TD
+  U[Browser UI] --> C[Build Configs]
+  C --> A[Next.js API Routes]
+  A --> P[Provider Abstraction]
+  P --> G[Groq]
+  P --> O[OpenRouter]
+  A --> R[Reference Checks]
+  A --> S[Scoring]
+  R --> S
+  S --> U
+  U --> B[Browser Storage]
 ```
 
 ## Benchmark Execution Flow
 
-```mermaid
-sequenceDiagram
-  participant User
-  participant UI as Browser UI
-  participant API as Next.js API Route
-  participant REF as Reference Logic
-  participant LLM as LLM Provider
-  participant SCORE as Scoring
-  participant STORE as Browser Storage
-
-  User->>UI: Select cases, models, prompts, workflows, and run controls
-  UI->>UI: Build benchmark configurations
-  UI->>API: POST /api/batch-evaluate
-  API->>REF: Compute deterministic reference decision and checks
-  API->>LLM: Execute model calls or workflow steps
-  LLM-->>API: Return raw model outputs
-  API->>SCORE: Parse JSON and score outputs
-  API-->>UI: Return batch results and metadata
-  UI->>STORE: Store latest run and history
-  UI->>UI: Render dashboard and reports
-```
+1. The user selects benchmark cases and configurations.
+2. The browser builds the batch request.
+3. The Next.js API executes model-only or workflow configurations.
+4. Deterministic reference checks and scoring are applied.
+5. Results are returned to the browser.
+6. Run history and reports are stored in browser-local MVP storage.
 
 ## Evaluation Methodology
 
@@ -150,11 +134,11 @@ Run one structured case through a selected ranked configuration while keeping de
 
 ## Local Setup
 
-This repository uses `pnpm` based on the committed `pnpm-lock.yaml`.
+This repository uses `npm` with the committed `package-lock.json`.
 
 ```bash
-pnpm install
-pnpm dev
+npm install
+npm run dev
 ```
 
 Open `http://localhost:3000`.
@@ -165,13 +149,13 @@ It contains safe synthetic PCT demo cases, prompts, workflows, criteria/settings
 Type-check:
 
 ```bash
-pnpm exec tsc --noEmit --incremental false
+npm run typecheck
 ```
 
 Build:
 
 ```bash
-pnpm build
+npm run build
 ```
 
 ## Environment Variables

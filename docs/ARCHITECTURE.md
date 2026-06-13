@@ -5,16 +5,17 @@ LLM Workflow Benchmark Lab is a Next.js App Router prototype for comparing model
 ## High-Level Architecture
 
 ```mermaid
-flowchart LR
-  UI[Browser UI] --> Routes[Next.js API Routes]
+flowchart TD
+  UI[Browser UI] --> Configs[Build Configs]
+  Configs --> Routes[Next.js API Routes]
   Routes --> Providers[Provider Abstraction]
-  Providers --> OpenRouter[OpenRouter]
   Providers --> Groq[Groq]
-
-  Routes --> Reference[Deterministic Reference Evaluator]
+  Providers --> OpenRouter[OpenRouter]
+  Routes --> Reference[Reference Checks]
   Routes --> Scoring[Scoring]
-  UI --> Reports[Results + Reports]
-  UI --> Storage[localStorage/sessionStorage]
+  Reference --> Scoring
+  Scoring --> UI
+  UI --> Storage[Browser Storage]
 ```
 
 ## Frontend Pages
@@ -53,6 +54,24 @@ Provider calls use `fetch` with bearer authentication. The MVP accepts provider 
 6. Outputs are parsed and scored.
 7. Results return to the browser and are stored in browser storage.
 8. Results and Reports pages aggregate and display metrics.
+
+```mermaid
+sequenceDiagram
+  participant User
+  participant UI as Browser UI
+  participant API as Next.js API
+  participant LLM as Provider
+
+  User->>UI: Select cases and configs
+  UI->>UI: Build batch request
+  UI->>API: POST /api/batch-evaluate
+  API->>API: Reference checks
+  API->>LLM: Model/workflow calls
+  LLM-->>API: Raw outputs
+  API->>API: Parse and score
+  API-->>UI: Batch results
+  UI->>UI: Store and report
+```
 
 ## Workflow Execution Flow
 
