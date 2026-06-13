@@ -107,13 +107,46 @@ The same platform structure can be adapted to other rule-based evaluation domain
 
 ## Screenshots
 
-TODO: add screenshots before public portfolio sharing.
+### Benchmark Planning and Progress
 
-![Case Input](public/screenshots/case-input.png)
-![Evaluation Setup](public/screenshots/evaluation-setup.png)
-![Workflow Builder](public/screenshots/workflow-builder.png)
-![Benchmark Results](public/screenshots/benchmark-results.png)
-![Reports](public/screenshots/reports.png)
+Configure benchmark cases, model and prompt baselines, multi-step workflows, scoring criteria, run controls, and estimated execution progress.
+
+<img src="./public/Screenshot%202026-06-13%20at%2014-29-40%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Benchmark planning and progress screen showing benchmark configuration and execution progress" width="100%" />
+
+### Visual Workflow Configuration
+
+Build and validate reusable multi-step LLM workflows with per-step model, prompt template, step type, and input-source configuration.
+
+<img src="./public/Screenshot%202026-06-13%20at%2014-53-55%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Visual workflow configuration screen showing multi-step workflow settings" width="100%" />
+
+### Benchmark Results
+
+Compare model, prompt, and workflow configurations using aggregate metrics, case-level scoring, and workflow execution traces.
+
+<img src="./public/Screenshot%202026-06-13%20at%2014-32-04%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Benchmark results dashboard showing aggregate metrics and case-level workflow traces" width="100%" />
+
+### Ranked Evaluation Report
+
+Review executive metrics, the active evaluation rubric, ranked configurations, failure findings, and documented limitations.
+
+<img src="./public/Screenshot%202026-06-13%20at%2014-32-21%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Ranked evaluation report showing rubric, configuration rankings, findings, and limitations" width="100%" />
+
+<details>
+<summary><strong>Additional product screens</strong></summary>
+
+### Provider and Model Setup
+
+Connect BYOK providers, load provider model catalogs, select models, and inspect configurable evaluation criteria.
+
+<img src="./public/Screenshot%202026-06-13%20at%2014-56-17%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Provider and model setup screen showing BYOK connections, model selection, and criteria controls" width="100%" />
+
+### Single Case Execution
+
+Run one structured case through a selected ranked configuration while keeping deterministic reference checks and optional context visible.
+
+<img src="./public/Screenshot%202026-06-13%20at%2014-49-05%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Single case execution screen showing configuration selection, structured case fields, and reference checks" width="100%" />
+
+</details>
 
 ## Local Setup
 
