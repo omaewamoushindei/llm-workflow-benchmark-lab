@@ -19,54 +19,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Detect package manager
-        id: package-manager
-        shell: bash
-        run: |
-          if [ -f pnpm-lock.yaml ]; then
-            echo "manager=pnpm" >> "$GITHUB_OUTPUT"
-            echo "cache=pnpm" >> "$GITHUB_OUTPUT"
-            echo "install=pnpm install --frozen-lockfile" >> "$GITHUB_OUTPUT"
-            echo "run=pnpm run" >> "$GITHUB_OUTPUT"
-            echo "exec=pnpm exec" >> "$GITHUB_OUTPUT"
-          elif [ -f package-lock.json ]; then
-            echo "manager=npm" >> "$GITHUB_OUTPUT"
-            echo "cache=npm" >> "$GITHUB_OUTPUT"
-            echo "install=npm ci" >> "$GITHUB_OUTPUT"
-            echo "run=npm run" >> "$GITHUB_OUTPUT"
-            echo "exec=npx" >> "$GITHUB_OUTPUT"
-          elif [ -f yarn.lock ]; then
-            echo "manager=yarn" >> "$GITHUB_OUTPUT"
-            echo "cache=yarn" >> "$GITHUB_OUTPUT"
-            echo "install=yarn install --immutable || yarn install --frozen-lockfile" >> "$GITHUB_OUTPUT"
-            echo "run=yarn" >> "$GITHUB_OUTPUT"
-            echo "exec=yarn" >> "$GITHUB_OUTPUT"
-          else
-            echo "No supported lockfile found." >&2
-            exit 1
-          fi
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: ${{ steps.package-manager.outputs.cache }}
-
-      - name: Enable Corepack
-        if: steps.package-manager.outputs.manager == 'pnpm' || steps.package-manager.outputs.manager == 'yarn'
-        run: corepack enable
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
-        shell: bash
-        run: ${{ steps.package-manager.outputs.install }}
+        run: pnpm install --frozen-lockfile
 
       - name: TypeScript check
         shell: bash
         run: |
           if node -e "const s=require('./package.json').scripts||{}; process.exit(s.typecheck ? 0 : 1)"; then
-            ${{ steps.package-manager.outputs.run }} typecheck
+            pnpm run typecheck
           elif [ -f tsconfig.json ]; then
-            ${{ steps.package-manager.outputs.exec }} tsc --noEmit --incremental false
+            pnpm exec tsc --noEmit --incremental false
           else
             echo "No typecheck script or tsconfig.json found; skipping TypeScript check."
           fi
@@ -75,7 +49,7 @@ jobs:
         shell: bash
         run: |
           if node -e "const s=require('./package.json').scripts||{}; process.exit(s.lint ? 0 : 1)"; then
-            ${{ steps.package-manager.outputs.run }} lint
+            pnpm run lint
           else
             echo "No lint script found; skipping lint."
           fi
@@ -84,7 +58,7 @@ jobs:
         shell: bash
         run: |
           if node -e "const s=require('./package.json').scripts||{}; process.exit(s.build ? 0 : 1)"; then
-            ${{ steps.package-manager.outputs.run }} build
+            pnpm run build
           else
             echo "No build script found; skipping build."
           fi
