@@ -17,6 +17,7 @@ import type { BenchmarkConfig, ClinicalCase, EvaluationResponse, LlmEvaluationRe
 import { calculatePctDeclinePercent, evaluateReferenceDecision } from "@/lib/pct-reference"
 import { benchmarkCases, type BenchmarkCase } from "@/lib/benchmark-cases"
 import { DEFAULT_PROMPT_TEMPLATES } from "@/lib/prompt-templates"
+import { detectPromptInjectionInCase } from "@/lib/prompt-security"
 import { Upload, FileText, Play, FlaskConical, Loader2 } from "lucide-react"
 
 interface CaseInputFormProps {
@@ -622,6 +623,9 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
   )
   const selectedExecutionOption =
     executionOptions.find((option) => option.config.configId === selectedExecutionConfigId) ?? null
+  const narrativePromptInjectionDetected =
+    detectPromptInjectionInCase(caseData).detected ||
+    Boolean(evaluationResponse?.metadata?.narrativePromptInjectionDetected)
 
   const loadBenchmarkCase = (benchmarkCaseId: string) => {
     const benchmarkCase = benchmarkCases.find((item) => item.id === benchmarkCaseId)
@@ -859,6 +863,12 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
           </div>
         </CardHeader>
         <CardContent className="space-y-6">
+          {narrativePromptInjectionDetected ? (
+            <div className="rounded-lg border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">
+              Instruction-like content detected in narrative context. Structured fields remain authoritative.
+            </div>
+          ) : null}
+
           <p className="rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
             Structured fields drive reference checks. Description text is provided as additional context to the model.
           </p>
@@ -1279,6 +1289,12 @@ export function CaseInputForm({ caseData, onCaseDataChange }: CaseInputFormProps
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
+              {evaluationResponse.metadata?.narrativePromptInjectionDetected ? (
+                <div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">
+                  Instruction-like content detected in narrative context. Structured fields remain authoritative.
+                </div>
+              ) : null}
+
               <div className="flex flex-wrap gap-x-6 gap-y-2">
                 <div>
                   <span className="text-muted-foreground">Output label / recommendation category: </span>

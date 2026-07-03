@@ -6,6 +6,11 @@ import { callProviderChatCompletion, type LlmProviderId } from '@/lib/llm-provid
 import type { PromptStrategyId } from '@/lib/openrouter'
 import { deriveReferenceChecks, evaluateReferenceDecision } from '@/lib/pct-reference'
 import { buildEvaluationPrompt } from '@/lib/prompt-builder'
+import {
+  detectPromptInjectionInCase,
+  formatProtectedCaseContext,
+  PROMPT_INJECTION_WARNING,
+} from '@/lib/prompt-security'
 import { normalizeLlmParsedOutput, scoreLlmOutput } from '@/lib/scoring'
 import type {
   BenchmarkConfig,
@@ -811,7 +816,10 @@ function buildMockResult(
   referenceDecision: ReferenceDecision,
   referenceChecks: ReferenceChecks,
 ): LlmEvaluationResult {
-  const parsedOutput = buildMockParsedOutput(caseData, referenceDecision, referenceChecks)
+  const parsedOutput = appendPromptInjectionWarning(
+    buildMockParsedOutput(caseData, referenceDecision, referenceChecks),
+    caseData,
+  )
 
   return {
     configId: config.configId,
@@ -916,7 +924,7 @@ function resolveWorkflowStepInput(args: {
   stepOutputs: WorkflowStepOutput[]
 }): ResolvedWorkflowInput {
   const { step, stepIndex, caseData, referenceChecks, stepOutputs } = args
-  const caseContext = JSON.stringify(caseData, null, 2)
+  const caseContext = formatProtectedCaseContext(caseData)
   const latestOutput = stepOutputs[stepOutputs.length - 1]
   const deterministicOutputIncluded = stepOutputs.some((output) => output.stepType === 'deterministic_precheck')
 
@@ -962,6 +970,18 @@ function resolveWorkflowStepInput(args: {
     previousStepOutputIncluded: false,
     includedStepOutputIds: [],
     referenceChecksIncluded: false,
+  }
+}
+
+function appendPromptInjectionWarning(parsedOutput: LlmParsedOutput, caseData: ClinicalCase): LlmParsedOutput {
+  const detection = detectPromptInjectionInCase(caseData)
+  if (!detection.detected || parsedOutput.safety_warnings.includes(PROMPT_INJECTION_WARNING)) {
+    return parsedOutput
+  }
+
+  return {
+    ...parsedOutput,
+    safety_warnings: [...parsedOutput.safety_warnings, PROMPT_INJECTION_WARNING],
   }
 }
 
@@ -1252,8 +1272,8 @@ async function buildLiveResult(args: {
     }
   }
 
-  const parsedOutput = normalizeLlmParsedOutput(parsedJson.data)
-  if (!parsedOutput) {
+  const normalizedOutput = normalizeLlmParsedOutput(parsedJson.data)
+  if (!normalizedOutput) {
     return {
       configId: config.configId,
       modelLabel: config.modelLabel,
@@ -1272,6 +1292,7 @@ async function buildLiveResult(args: {
       workflowTrace: workflowExecution?.trace,
     }
   }
+  const parsedOutput = appendPromptInjectionWarning(normalizedOutput, caseData)
 
   return {
     configId: config.configId,

@@ -1,5 +1,6 @@
 import type { ClinicalCase } from "./types"
 import type { PromptStrategyId } from "./openrouter"
+import { formatProtectedCaseContext } from "./prompt-security"
 
 const JSON_SCHEMA = `{
   "recommendation": "consider_discontinuation" | "continue_antibiotics" | "insufficient_information" | "clinical_review_required",
@@ -25,29 +26,6 @@ const JSON_SCHEMA = `{
   "missing_information": string[],
   "confidence": "low" | "medium" | "high"
 }`
-
-function formatNullableNumber(value: number | null): string {
-  return value === null ? "not provided" : String(value)
-}
-
-function describeCase(caseData: ClinicalCase): string {
-  return [
-    `Patient age: ${formatNullableNumber(caseData.patientAge)}`,
-    `Sex: ${caseData.sex || "not provided"}`,
-    `Symptoms: ${caseData.symptoms || "not provided"}`,
-    `Infection context: ${caseData.infectionContext}`,
-    `Clinical improvement: ${caseData.clinicalImprovement}`,
-    `Current antibiotic status: ${caseData.currentAntibioticStatus || "not provided"}`,
-    `Antibiotics duration days: ${formatNullableNumber(caseData.antibioticsDurationDays)}`,
-    `Peak PCT ng/mL: ${formatNullableNumber(caseData.peakPct)}`,
-    `Current PCT ng/mL: ${formatNullableNumber(caseData.currentPct)}`,
-    `WBC x10^9/L: ${formatNullableNumber(caseData.wbc)}`,
-    `CRP mg/L: ${formatNullableNumber(caseData.crp)}`,
-    `Exclusion/caution condition: ${caseData.exclusionCondition}`,
-    `Clinical notes: ${caseData.clinicalNotes || "not provided"}`,
-    `Case description: ${caseData.caseDescription || "not provided"}`,
-  ].join("\n")
-}
 
 function strategyInstructions(promptStrategy: PromptStrategyId): string {
   switch (promptStrategy) {
@@ -117,7 +95,7 @@ Required JSON schema:
 ${JSON_SCHEMA}
 
 Case data:
-${describeCase(caseData)}
+${formatProtectedCaseContext(caseData)}
 
 Prompt strategy instructions:
 ${promptTemplateText?.trim() || strategyInstructions(promptStrategy)}

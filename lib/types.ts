@@ -210,5 +210,6 @@ export interface EvaluationResponse {
     evaluationMode: 'mock' | 'live'
     providerId?: 'openrouter' | 'groq'
     providerLabel?: string
+    narrativePromptInjectionDetected?: boolean
   }
 }

@@ -5,6 +5,11 @@ import { callProviderChatCompletion, type LlmProviderId } from '@/lib/llm-provid
 import { type PromptStrategyId } from '@/lib/openrouter'
 import { deriveReferenceChecks, evaluateReferenceDecision } from '@/lib/pct-reference'
 import { buildEvaluationPrompt } from '@/lib/prompt-builder'
+import {
+  detectPromptInjectionInCase,
+  formatProtectedCaseContext,
+  PROMPT_INJECTION_WARNING,
+} from '@/lib/prompt-security'
 import { normalizeLlmParsedOutput, scoreLlmOutput } from '@/lib/scoring'
 import type {
   ClinicalCase,
@@ -462,13 +467,13 @@ function buildMockResults(
   return MOCK_MODELS.map((model) => {
     const recommendation = pickMockRecommendation({ model, reference, caseData })
 
-    const parsedOutput = buildMockParsedOutput({
+    const parsedOutput = appendPromptInjectionWarning(buildMockParsedOutput({
       model,
       caseData,
       reference,
       referenceChecks,
       recommendation,
-    })
+    }), caseData)
 
     const scores = scoreLlmOutput(parsedOutput, reference, caseData, referenceChecks)
 
@@ -571,6 +576,7 @@ function resolveWorkflowStepInput(args: {
   stepOutputs: WorkflowStepOutput[]
 }): ResolvedWorkflowInput {
   const { step, stepIndex, caseData, referenceChecks, stepOutputs } = args
+  const protectedCaseContext = formatProtectedCaseContext(caseData)
   const latestOutput = stepOutputs[stepOutputs.length - 1]
   const deterministicOutputIncluded = stepOutputs.some((output) => output.stepType === 'deterministic_precheck')
 
@@ -602,7 +608,7 @@ function resolveWorkflowStepInput(args: {
 
   if (step.inputSource === 'combined') {
     return {
-      prompt: `Case data:\n${JSON.stringify(caseData, null, 2)}\n\nPrevious workflow step outputs:\n${formatWorkflowStepOutputs(stepOutputs)}`,
+      prompt: `Case data:\n${protectedCaseContext}\n\nPrevious workflow step outputs:\n${formatWorkflowStepOutputs(stepOutputs)}`,
       summary: `Case data plus ${stepOutputs.length} previous step output${stepOutputs.length === 1 ? '' : 's'}.`,
       previousStepOutputIncluded: stepOutputs.length > 0,
       includedStepOutputIds: stepOutputs.map((output) => output.stepId),
@@ -611,11 +617,23 @@ function resolveWorkflowStepInput(args: {
   }
 
   return {
-    prompt: `Case data:\n${JSON.stringify(caseData, null, 2)}`,
+    prompt: `Case data:\n${protectedCaseContext}`,
     summary: 'Original case data and case context only.',
     previousStepOutputIncluded: false,
     includedStepOutputIds: [],
     referenceChecksIncluded: false,
+  }
+}
+
+function appendPromptInjectionWarning(parsedOutput: LlmParsedOutput, caseData: ClinicalCase): LlmParsedOutput {
+  const detection = detectPromptInjectionInCase(caseData)
+  if (!detection.detected || parsedOutput.safety_warnings.includes(PROMPT_INJECTION_WARNING)) {
+    return parsedOutput
+  }
+
+  return {
+    ...parsedOutput,
+    safety_warnings: [...parsedOutput.safety_warnings, PROMPT_INJECTION_WARNING],
   }
 }
 
@@ -666,8 +684,8 @@ async function buildProviderResult(args: {
     }
   }
 
-  const parsedOutput = normalizeLlmParsedOutput(parsedJson.data)
-  if (!parsedOutput) {
+  const normalizedOutput = normalizeLlmParsedOutput(parsedJson.data)
+  if (!normalizedOutput) {
     return {
       configId: config.configId,
       modelLabel: config.modelLabel,
@@ -678,6 +696,7 @@ async function buildProviderResult(args: {
       workflowTrace: workflowExecution?.trace,
     }
   }
+  const parsedOutput = appendPromptInjectionWarning(normalizedOutput, caseData)
 
   return {
     configId: config.configId,
@@ -959,6 +978,7 @@ export async function POST(request: Request) {
   try {
     const referenceDecision = evaluateReferenceDecision(caseData)
     const referenceChecks = deriveReferenceChecks(caseData, referenceDecision)
+    const promptInjectionDetection = detectPromptInjectionInCase(caseData)
     const isMockMode = process.env.USE_MOCK_LLM === 'true'
     const results =
       isMockMode
@@ -975,18 +995,23 @@ export async function POST(request: Request) {
             executionConfig,
           )
 
+    const metadata: NonNullable<EvaluationResponse['metadata']> = isMockMode
+      ? { evaluationMode: 'mock' }
+      : {
+          evaluationMode: 'live',
+          providerId,
+          providerLabel: getProviderLabel(providerId),
+        }
+    if (promptInjectionDetection.detected) {
+      metadata.narrativePromptInjectionDetected = true
+    }
+
     const response: EvaluationResponse = {
       caseData,
       referenceDecision,
       referenceChecks,
       results,
-      metadata: isMockMode
-        ? { evaluationMode: 'mock' }
-        : {
-            evaluationMode: 'live',
-            providerId,
-            providerLabel: getProviderLabel(providerId),
-          },
+      metadata,
     }
 
     return NextResponse.json(response)
