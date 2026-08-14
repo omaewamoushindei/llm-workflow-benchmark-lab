@@ -1,0 +1,197 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Optional benchmark-run artifact persistence for LLM Workflow Benchmark Lab.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+    AllowedPattern: '^[a-z0-9-]{1,20}$'
+    Description: Short environment name used in the Lambda and log group names.
+  AllowedOrigins:
+    Type: CommaDelimitedList
+    Default: http://localhost:3000
+    Description: Explicit browser origins allowed by HTTP API CORS. Never use a wildcard for deployment.
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues:
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+
+Resources:
+  BenchmarkArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  BenchmarkArtifactsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BenchmarkArtifactsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureArtifactTransport
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+            Resource: !Sub '${BenchmarkArtifactsBucket.Arn}/benchmark-runs/v1/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+          - Sid: DenyUnconditionalArtifactWrites
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub '${BenchmarkArtifactsBucket.Arn}/benchmark-runs/v1/*'
+            Condition:
+              'Null':
+                s3:if-none-match: 'true'
+
+  BenchmarkRunsLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/llm-benchmark-runs-${EnvironmentName}'
+      RetentionInDays: !Ref LogRetentionDays
+
+  BenchmarkRunsFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BenchmarkArtifactObjectAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadWriteBenchmarkArtifactObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub '${BenchmarkArtifactsBucket.Arn}/benchmark-runs/v1/*'
+              - Sid: ListBenchmarkArtifactBucket
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt BenchmarkArtifactsBucket.Arn
+        - PolicyName: BenchmarkRunsFunctionLogging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: WriteFunctionLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/llm-benchmark-runs-${EnvironmentName}:*'
+
+  BenchmarkRunsApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: '$default'
+      DefinitionBody:
+        openapi: 3.0.1
+        info:
+          title: Benchmark Runs API
+          version: '1.0'
+        paths: {}
+      CorsConfiguration:
+        AllowCredentials: false
+        AllowHeaders:
+          - Content-Type
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowOrigins: !Ref AllowedOrigins
+        MaxAge: 600
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 10
+        ThrottlingRateLimit: 5
+
+  BenchmarkRunsFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - BenchmarkRunsLogGroup
+    Properties:
+      FunctionName: !Sub 'llm-benchmark-runs-${EnvironmentName}'
+      Description: Persists and retrieves completed benchmark-run artifacts.
+      CodeUri: functions/benchmark-runs/
+      Handler: handler.handler
+      Runtime: nodejs22.x
+      Architectures:
+        - arm64
+      MemorySize: 256
+      Timeout: 10
+      Role: !GetAtt BenchmarkRunsFunctionRole.Arn
+      Environment:
+        Variables:
+          ARTIFACT_BUCKET_NAME: !Ref BenchmarkArtifactsBucket
+          ARTIFACT_KEY_PREFIX: benchmark-runs/v1
+      Events:
+        CreateBenchmarkRun:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BenchmarkRunsApi
+            Method: POST
+            Path: /benchmark-runs
+            PayloadFormatVersion: '2.0'
+        GetBenchmarkRun:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BenchmarkRunsApi
+            Method: GET
+            Path: /benchmark-runs/{runId}
+            PayloadFormatVersion: '2.0'
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Bundle: true
+        EntryPoints:
+          - handler.ts
+        Format: cjs
+        Minify: true
+        Platform: node
+        Target: es2022
+
+Outputs:
+  BenchmarkRunsApiUrl:
+    Description: HTTP API base URL. The current Next.js application does not consume it yet.
+    Value: !Sub 'https://${BenchmarkRunsApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+  BenchmarkArtifactsBucketName:
+    Description: Private S3 bucket containing benchmark-run artifacts.
+    Value: !Ref BenchmarkArtifactsBucket
+  BenchmarkRunsFunctionName:
+    Description: Lambda function name.
+    Value: !Ref BenchmarkRunsFunction

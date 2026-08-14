@@ -1,0 +1,32 @@
+{
+  "version": "2.0",
+  "routeKey": "GET /benchmark-runs/{runId}",
+  "rawPath": "/benchmark-runs/3bc956b2-0386-4daf-b980-7c4669fd19d9",
+  "rawQueryString": "",
+  "headers": {
+    "accept": "application/json",
+    "host": "localhost"
+  },
+  "requestContext": {
+    "accountId": "123456789012",
+    "apiId": "local",
+    "domainName": "localhost",
+    "domainPrefix": "localhost",
+    "http": {
+      "method": "GET",
+      "path": "/benchmark-runs/3bc956b2-0386-4daf-b980-7c4669fd19d9",
+      "protocol": "HTTP/1.1",
+      "sourceIp": "127.0.0.1",
+      "userAgent": "sam-local"
+    },
+    "requestId": "local-get-request",
+    "routeKey": "GET /benchmark-runs/{runId}",
+    "stage": "$default",
+    "time": "13/Aug/2026:12:00:00 +0000",
+    "timeEpoch": 1786622400000
+  },
+  "pathParameters": {
+    "runId": "3bc956b2-0386-4daf-b980-7c4669fd19d9"
+  },
+  "isBase64Encoded": false
+}

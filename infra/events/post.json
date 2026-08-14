@@ -1,0 +1,30 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /benchmark-runs",
+  "rawPath": "/benchmark-runs",
+  "rawQueryString": "",
+  "headers": {
+    "content-type": "application/json",
+    "host": "localhost"
+  },
+  "requestContext": {
+    "accountId": "123456789012",
+    "apiId": "local",
+    "domainName": "localhost",
+    "domainPrefix": "localhost",
+    "http": {
+      "method": "POST",
+      "path": "/benchmark-runs",
+      "protocol": "HTTP/1.1",
+      "sourceIp": "127.0.0.1",
+      "userAgent": "sam-local"
+    },
+    "requestId": "local-post-request",
+    "routeKey": "POST /benchmark-runs",
+    "stage": "$default",
+    "time": "13/Aug/2026:12:00:00 +0000",
+    "timeEpoch": 1786622400000
+  },
+  "body": "{\"runId\":\"3bc956b2-0386-4daf-b980-7c4669fd19d9\",\"artifact\":{\"schemaVersion\":\"1.0\",\"scoringVersion\":\"1.0\",\"appName\":\"LLM Workflow Benchmark Lab\",\"batchId\":\"batch-local-example\",\"createdAt\":\"2026-08-13T12:00:00.000Z\",\"providerId\":\"openrouter\",\"aggregate\":{\"averageRecommendationMatch\":100},\"cases\":[{\"caseId\":\"synthetic-case\",\"title\":\"Synthetic local test case\",\"caseData\":{},\"referenceDecision\":{},\"referenceChecks\":{},\"results\":[{\"configId\":\"mock-config\",\"status\":\"success\"}]}],\"rawBatch\":{\"batchId\":\"batch-local-example\",\"createdAt\":\"2026-08-13T12:00:00.000Z\",\"providerId\":\"openrouter\",\"aggregate\":{\"averageRecommendationMatch\":100},\"cases\":[{\"caseId\":\"synthetic-case\",\"title\":\"Synthetic local test case\",\"caseData\":{},\"referenceDecision\":{},\"referenceChecks\":{},\"results\":[{\"configId\":\"mock-config\",\"status\":\"success\"}]}]}}}",
+  "isBase64Encoded": false
+}

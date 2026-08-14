@@ -8,6 +8,14 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import {
+  CloudBenchmarkRunError,
+  isCloudBenchmarkRunsConfigured,
+  isCloudRunId,
+  loadBenchmarkRunFromCloud,
+  saveBenchmarkRunToCloud,
+  type SaveBenchmarkRunResult,
+} from "@/lib/cloud-benchmark-runs"
+import {
   EVALUATION_CRITERIA_STORAGE_KEY,
   LATEST_EVALUATION_CRITERIA_STORAGE_KEY,
   getActiveScoringWeight,
@@ -48,9 +56,12 @@ import {
   Award,
   Brain,
   CheckCircle2,
+  Cloud,
+  Copy,
   Download,
   FileText,
   Info,
+  Loader2,
   Save,
   Shield,
   Sparkles,
@@ -115,6 +126,48 @@ const WORKSPACE_CATEGORIES: Array<{ id: WorkspaceCategory; label: string }> = [
   { id: "benchmarkRunHistory", label: "Benchmark run history" },
   { id: "singleCaseResults", label: "Single-case results" },
 ]
+
+const CLOUD_RUN_IMPORT_CATEGORIES: Record<WorkspaceCategory, boolean> = {
+  customBenchmarkCases: false,
+  evaluationWorkflows: false,
+  promptTemplates: false,
+  evaluationCriteria: false,
+  evaluationSettings: false,
+  benchmarkRunHistory: true,
+  singleCaseResults: false,
+}
+
+type CloudNotice = {
+  kind: "success" | "error" | "info"
+  message: string
+}
+
+function getCloudErrorMessage(error: unknown, operation: "save" | "load"): string {
+  if (error instanceof CloudBenchmarkRunError) {
+    if (error.code === "INVALID_RUN_ID") return "Enter a valid Cloud Run ID."
+    if (error.code === "NOT_FOUND") return "Cloud run not found."
+    if (error.code === "CONFLICT") {
+      return operation === "save"
+        ? "Cloud save failed because the generated ID already contains different content. Your local benchmark result is unchanged."
+        : "Cloud load failed because the Cloud Run ID conflicts with existing content. Your local benchmark history is unchanged."
+    }
+    if (error.code === "ARTIFACT_REJECTED") {
+      return operation === "save"
+        ? "Cloud save failed because the artifact was rejected. Your local benchmark result is unchanged."
+        : "Cloud load failed because the returned artifact was rejected. Your local benchmark history is unchanged."
+    }
+    if (error.code === "TIMEOUT") {
+      return operation === "save"
+        ? "Cloud save timed out. Your local benchmark result is unchanged."
+        : "Cloud load timed out. Your local benchmark history is unchanged."
+    }
+    if (error.code === "NOT_CONFIGURED") return "Cloud persistence is not configured."
+  }
+
+  return operation === "save"
+    ? "Cloud save failed. Your local benchmark result is unchanged."
+    : "Cloud load failed. Your local benchmark history is unchanged."
+}
 
 type ModelRanking = {
   configId: string
@@ -695,6 +748,13 @@ export default function ReportsPage() {
   })
   const [conflictActions, setConflictActions] = useState<Record<string, WorkspaceConflictAction>>({})
   const [workspaceMessage, setWorkspaceMessage] = useState<string | null>(null)
+  const cloudPersistenceEnabled = isCloudBenchmarkRunsConfigured()
+  const [cloudSelectedBatchId, setCloudSelectedBatchId] = useState("")
+  const [cloudRunIdInput, setCloudRunIdInput] = useState("")
+  const [cloudBusy, setCloudBusy] = useState<"save" | "load" | null>(null)
+  const [cloudNotice, setCloudNotice] = useState<CloudNotice | null>(null)
+  const [lastCloudSave, setLastCloudSave] = useState<SaveBenchmarkRunResult | null>(null)
+  const [cloudConflictPending, setCloudConflictPending] = useState(false)
 
   useEffect(() => {
     try {
@@ -714,6 +774,13 @@ export default function ReportsPage() {
       setReportCriteria(parseEvaluationCriteria(null))
     }
   }, [])
+
+  useEffect(() => {
+    setCloudSelectedBatchId((current) => {
+      if (current && runHistory.some((run) => run.batchId === current)) return current
+      return runHistory.length === 1 ? runHistory[0].batchId : ""
+    })
+  }, [runHistory])
 
   const runsForScope = useMemo(() => {
     if (reportScope === "latest") return []
@@ -785,6 +852,7 @@ export default function ReportsPage() {
   }
 
   const previewWorkspaceImport = (raw: string) => {
+    setCloudConflictPending(false)
     setImportText(raw)
     const workspace = parseWorkspaceExport(raw)
     const preview = buildWorkspaceImportPreview({
@@ -811,6 +879,10 @@ export default function ReportsPage() {
     writeWorkspaceData(merged)
     refreshWorkspaceState()
     setWorkspaceMessage("Workspace import applied. API keys were not imported.")
+    if (cloudConflictPending) {
+      setCloudNotice({ kind: "success", message: "Cloud run conflict choices applied to local history." })
+      setCloudConflictPending(false)
+    }
   }
 
   const deleteRun = (batchId: string) => {
@@ -824,6 +896,101 @@ export default function ReportsPage() {
     writeBenchmarkRunHistory(localStorage, [])
     setRunHistory([])
     setWorkspaceMessage("Benchmark run history cleared.")
+  }
+
+  const saveSelectedRunToCloud = async () => {
+    const artifact = runHistory.find((run) => run.batchId === cloudSelectedBatchId)
+    if (!artifact) {
+      setCloudNotice({ kind: "error", message: "Select one completed benchmark run to save." })
+      return
+    }
+
+    setCloudBusy("save")
+    setCloudNotice(null)
+    try {
+      const result = await saveBenchmarkRunToCloud(artifact)
+      setLastCloudSave(result)
+      setCloudRunIdInput(result.runId)
+      setCloudNotice({
+        kind: "success",
+        message: result.created
+          ? "Benchmark run saved to AWS. Keep the Cloud Run ID to retrieve it later."
+          : "This benchmark run already exists in AWS under the generated Cloud Run ID.",
+      })
+    } catch (error) {
+      setCloudNotice({ kind: "error", message: getCloudErrorMessage(error, "save") })
+    } finally {
+      setCloudBusy(null)
+    }
+  }
+
+  const loadCloudRun = async () => {
+    const runId = cloudRunIdInput.trim()
+    if (!isCloudRunId(runId)) {
+      setCloudNotice({ kind: "error", message: "Enter a valid Cloud Run ID." })
+      return
+    }
+
+    setCloudBusy("load")
+    setCloudNotice(null)
+    try {
+      const result = await loadBenchmarkRunFromCloud(runId)
+      const workspace = createWorkspaceExport({ benchmarkRunHistory: [result.artifact] })
+      const localData = readLocalWorkspaceData()
+      const preview = buildWorkspaceImportPreview({ workspace, localData })
+
+      if (!preview.valid) {
+        throw new CloudBenchmarkRunError("ARTIFACT_REJECTED", "The returned benchmark artifact is invalid.")
+      }
+      if (preview.exactDuplicateRunCount > 0) {
+        setCloudNotice({ kind: "info", message: "This run already exists locally." })
+        setCloudConflictPending(false)
+        return
+      }
+      if (preview.conflicts.length > 0) {
+        setImportText("")
+        setImportWorkspace(workspace)
+        setImportPreview(preview)
+        setImportMode("merge")
+        setImportCategories({ ...CLOUD_RUN_IMPORT_CATEGORIES })
+        setConflictActions(Object.fromEntries(preview.conflicts.map((conflict) => [conflict.id, conflict.defaultAction])))
+        setCloudConflictPending(true)
+        setCloudNotice({
+          kind: "info",
+          message: "The cloud run conflicts with local history. Review the existing import conflict choices and apply them explicitly.",
+        })
+        return
+      }
+
+      const merged = applyWorkspaceImport({
+        workspace,
+        localData,
+        options: {
+          mode: "merge",
+          categories: CLOUD_RUN_IMPORT_CATEGORIES,
+          conflictActions: {},
+        },
+      })
+      writeWorkspaceData(merged)
+      refreshWorkspaceState()
+      setCloudConflictPending(false)
+      setCloudNotice({ kind: "success", message: "Cloud run loaded successfully." })
+    } catch (error) {
+      setCloudConflictPending(false)
+      setCloudNotice({ kind: "error", message: getCloudErrorMessage(error, "load") })
+    } finally {
+      setCloudBusy(null)
+    }
+  }
+
+  const copyLastCloudRunId = async () => {
+    if (!lastCloudSave) return
+    try {
+      await navigator.clipboard.writeText(lastCloudSave.runId)
+      setCloudNotice({ kind: "success", message: "Cloud Run ID copied." })
+    } catch {
+      setCloudNotice({ kind: "error", message: "Could not copy the Cloud Run ID. Copy it manually instead." })
+    }
   }
 
   return (
@@ -887,6 +1054,117 @@ export default function ReportsPage() {
                   Workspace export does not include API keys. Each user must enter their own provider key.
                 </p>
               </div>
+
+              {cloudPersistenceEnabled ? (
+                <div className="rounded-lg border border-primary/20 bg-primary/5 p-4" data-testid="cloud-persistence">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="flex items-start gap-2">
+                      <Cloud className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                      <div>
+                        <p className="text-sm font-medium text-foreground">Cloud Persistence</p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Explicitly save one completed run to AWS or retrieve one by its Cloud Run ID.
+                        </p>
+                      </div>
+                    </div>
+                    <Badge variant="outline">Optional prototype</Badge>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    <div>
+                      <label className="text-xs font-medium text-foreground" htmlFor="cloud-run-selection">
+                        Local completed run
+                      </label>
+                      <div className="mt-1.5 flex flex-col gap-2 sm:flex-row">
+                        <select
+                          id="cloud-run-selection"
+                          value={cloudSelectedBatchId}
+                          onChange={(event) => setCloudSelectedBatchId(event.target.value)}
+                          className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm"
+                          disabled={cloudBusy !== null}
+                        >
+                          <option value="">Select a run...</option>
+                          {runHistory.map((run) => (
+                            <option key={run.batchId} value={run.batchId}>
+                              {run.batchId} ({run.cases.length} cases)
+                            </option>
+                          ))}
+                        </select>
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={saveSelectedRunToCloud}
+                          disabled={!cloudSelectedBatchId || cloudBusy !== null}
+                        >
+                          {cloudBusy === "save" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                          Save Run to AWS
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-foreground" htmlFor="cloud-run-id">
+                        Cloud Run ID
+                      </label>
+                      <div className="mt-1.5 flex flex-col gap-2 sm:flex-row">
+                        <input
+                          id="cloud-run-id"
+                          type="text"
+                          value={cloudRunIdInput}
+                          onChange={(event) => setCloudRunIdInput(event.target.value)}
+                          placeholder="00000000-0000-4000-8000-000000000000"
+                          autoComplete="off"
+                          spellCheck={false}
+                          className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 font-mono text-xs"
+                          disabled={cloudBusy !== null}
+                        />
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={loadCloudRun}
+                          disabled={cloudBusy !== null}
+                        >
+                          {cloudBusy === "load" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+                          Load Cloud Run
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {lastCloudSave ? (
+                    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-background/70 p-2 text-xs">
+                      <span className="text-muted-foreground">Last Cloud Run ID:</span>
+                      <code className="break-all text-foreground">{lastCloudSave.runId}</code>
+                      <Button type="button" variant="ghost" size="sm" onClick={copyLastCloudRunId} className="h-7 px-2">
+                        <Copy className="mr-1 h-3.5 w-3.5" />
+                        Copy
+                      </Button>
+                      <span className="text-muted-foreground">{lastCloudSave.artifactByteSize.toLocaleString()} bytes</span>
+                    </div>
+                  ) : null}
+
+                  {cloudNotice ? (
+                    <p
+                      role="status"
+                      className={`mt-3 text-xs ${
+                        cloudNotice.kind === "error"
+                          ? "text-destructive"
+                          : cloudNotice.kind === "success"
+                            ? "text-success"
+                            : "text-muted-foreground"
+                      }`}
+                    >
+                      {cloudNotice.message}
+                    </p>
+                  ) : null}
+
+                  <p className="mt-3 text-xs text-warning-foreground">
+                    Prototype cloud persistence. Stored benchmark artifacts must contain synthetic/non-sensitive data. This demo API
+                    is not authenticated and is not intended for production or PHI.
+                  </p>
+                </div>
+              ) : null}
 
               <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
                 <MetricCard label="Run History" value={String(runHistory.length)} icon={<FileText className="h-5 w-5 text-primary" />} />

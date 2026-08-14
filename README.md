@@ -29,6 +29,7 @@ LLM workflows are hard to trust when prompts, models, and workflow steps behave 
 - Report generation from latest batch runs or merged benchmark history
 - Workspace import/export for prompts, workflows, custom cases, criteria, and run history
 - Run history and merged result analysis for replicate consistency statistics
+- Optional, explicit AWS save/load for completed benchmark artifacts
 
 ## Architecture
 
@@ -44,6 +45,7 @@ flowchart TD
   R --> S
   S --> U
   U --> B[Browser Storage]
+  U -. Optional explicit save/load .-> AWS[API Gateway + Lambda + S3]
 ```
 
 ## Benchmark Execution Flow
@@ -88,6 +90,7 @@ The same platform structure can be adapted to other rule-based evaluation domain
 - Next.js API routes
 - Groq and OpenRouter provider integrations
 - Browser-local MVP persistence with `localStorage` and `sessionStorage`
+- Optional AWS SAM persistence API using API Gateway, Lambda, S3, and CloudWatch Logs
 
 ## Screenshots
 
@@ -167,15 +170,18 @@ USE_MOCK_LLM=true
 OPENROUTER_API_KEY=
 GROQ_API_KEY=
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
+NEXT_PUBLIC_BENCHMARK_RUNS_API_URL=
 ```
 
 API keys are optional when running in mock mode. The MVP also supports browser-session BYOK keys through the UI where available. Never commit real API keys.
+
+`NEXT_PUBLIC_BENCHMARK_RUNS_API_URL` is optional. When it is absent or empty, the Reports cloud controls are hidden and the browser makes no AWS persistence requests. When configured, use the deployed API Gateway base URL without a route suffix. Cloud save/load is a synthetic-data prototype: it is unauthenticated and must not be used for PHI, credentials, or production data.
 
 ## Current MVP Limitations
 
 - No database
 - No authentication
-- Browser-local and session-only persistence
+- Browser-local persistence remains the default; optional AWS artifact persistence is explicit and unauthenticated
 - No production PHI handling
 - Provider rate limits can affect larger benchmark runs
 - Vercel/serverless timeout risk for long batch evaluations
