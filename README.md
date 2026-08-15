@@ -45,8 +45,38 @@ flowchart TD
   R --> S
   S --> U
   U --> B[Browser Storage]
-  U -. Optional explicit save/load .-> AWS[API Gateway + Lambda + S3]
+  U -. Optional explicit save/load .-> AGW[API Gateway HTTP API]
+  AGW --> L[TypeScript Lambda]
+  L --> S3[(Private S3 bucket)]
+  L --> CW[CloudWatch Logs]
 ```
+
+The Next.js frontend remains deployed on Vercel. Benchmark execution still uses the existing Next.js API routes; it has not been moved to Lambda.
+
+## AWS Serverless Persistence
+
+AWS provides a deliberately small, optional persistence extension for completed benchmark artifacts:
+
+```mermaid
+flowchart TD
+  V[Vercel / Next.js]
+  V -->|Explicit Save / Load| A[API Gateway HTTP API]
+  A --> L[TypeScript Lambda]
+  L --> S3[(Amazon S3)]
+  L --> CW[CloudWatch Logs]
+```
+
+- The Reports page exposes explicit **Save Run to AWS** and **Load Cloud Run** actions only when `NEXT_PUBLIC_BENCHMARK_RUNS_API_URL` is configured.
+- Browser `localStorage` remains the default run-history store. Cloud timeouts, network errors, and rejected artifacts do not modify local history.
+- Artifacts reuse the existing `BenchmarkRunHistoryEntry` shape and are addressed by browser-generated UUIDs under `benchmark-runs/v1/{runId}.json`.
+- Lambda validates completed-run structure, enforces a 4 MiB application limit, and recursively rejects likely secret or authentication fields and values.
+- S3 writes use `If-None-Match: *`: the first write creates the object, an identical retry is idempotent, and different content under the same UUID returns a conflict without overwriting.
+- The private, versioned bucket uses S3 Block Public Access and SSE-S3. Bucket-level `s3:ListBucket` allows a missing `GetObject` to produce correct `404` semantics.
+- CloudWatch application logs contain only structured request metadata. Request bodies, artifacts, prompts, model outputs, credentials, and provider keys are excluded.
+- The Lambda role grants `s3:GetObject` and `s3:PutObject` only for the artifact prefix, `s3:ListBucket` only for the dedicated bucket, and writes only to the designated log group.
+- API Gateway, Lambda, S3, CloudWatch, IAM, and policies are defined in [AWS SAM](./infra/template.yaml). See [AWS architecture details](./docs/AWS_ARCHITECTURE.md).
+
+This demonstration API has no authentication and no database. It is for synthetic, non-sensitive portfolio data only—not PHI, production clinical infrastructure, or clinically validated decision support.
 
 ## Benchmark Execution Flow
 

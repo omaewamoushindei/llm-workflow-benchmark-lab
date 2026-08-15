@@ -8,13 +8,15 @@ The integration is disabled unless `NEXT_PUBLIC_BENCHMARK_RUNS_API_URL` is confi
 
 ```mermaid
 flowchart LR
-  App[Current Next.js application] --> Api[API Gateway HTTP API]
+  App[Vercel / Next.js] -->|Explicit Save / Load| Api[API Gateway HTTP API]
   Api --> Lambda[TypeScript Lambda on Node.js 22]
   Lambda --> S3[(Private S3 bucket)]
   Lambda --> Logs[CloudWatch Logs]
 ```
 
 AWS Amplify Hosting, authentication, DynamoDB, queues, workflow orchestration, and Lambda-based benchmark execution are intentionally out of scope.
+
+The deployed development stack has been verified in `eu-central-1` with the production Vercel origin explicitly allowed by CORS. The endpoint remains configuration rather than source code: the live API URL is supplied through the Vercel Production environment and is not hardcoded in the client.
 
 ## Optional Reports integration
 
@@ -164,9 +166,9 @@ npm run sam:build
 
 The last two commands require the AWS SAM CLI. `sam build` uses the repository's esbuild development dependency. The sample API Gateway v2 events are in `infra/events/post.json` and `infra/events/get.json`; invocation against S3 additionally requires a configured bucket and AWS credentials, so the unit tests use an in-memory S3 test double instead.
 
-## Deployment prerequisites and sequence
+## Reproducible deployment and teardown boundary
 
-No AWS deployment is performed as part of Phase 1 implementation. Before a manual deployment:
+The development demonstration has been deployed and smoke-tested, but deployment remains a manual, reviewable operation. To reproduce it in a non-production account:
 
 1. Install AWS CLI v2 and AWS SAM CLI.
 2. Configure an AWS profile or role for the intended non-production account and Region.
@@ -176,6 +178,6 @@ No AWS deployment is performed as part of Phase 1 implementation. Before a manua
 6. Run `sam deploy --guided --template-file .aws-sam/build/template.yaml` and enter the explicit `AllowedOrigins` value.
 7. Record the `BenchmarkRunsApiUrl` stack output outside source control.
 8. Smoke-test create, identical replay, conflict, retrieval, secret rejection, and size rejection using synthetic data.
-9. Inspect the Lambda role and CloudWatch logs before any later application integration.
+9. Inspect the Lambda role and CloudWatch logs before enabling the optional frontend integration.
 
-Because the S3 bucket uses `DeletionPolicy: Retain`, deleting the CloudFormation stack does not delete the bucket or its artifacts. Retained buckets require a separate, deliberate administrative cleanup process.
+The current AWS resources are temporary portfolio infrastructure, not a production SaaS backend. Teardown is deliberately deferred until frontend evidence has been captured. Because the S3 bucket uses `DeletionPolicy: Retain`, deleting the CloudFormation stack does not delete the bucket or its artifacts; retained buckets require a separate, deliberate administrative cleanup process.

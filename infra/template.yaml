@@ -187,7 +187,7 @@ Resources:
 
 Outputs:
   BenchmarkRunsApiUrl:
-    Description: HTTP API base URL. The current Next.js application does not consume it yet.
+    Description: HTTP API base URL for optional explicit benchmark artifact save/load.
     Value: !Sub 'https://${BenchmarkRunsApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
   BenchmarkArtifactsBucketName:
     Description: Private S3 bucket containing benchmark-run artifacts.
