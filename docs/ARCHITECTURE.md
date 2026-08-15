@@ -16,7 +16,7 @@ flowchart TD
   Reference --> Scoring
   Scoring --> UI
   UI --> Storage[Browser Storage]
-  UI -. Explicit artifact save/load .-> Gateway[API Gateway HTTP API]
+  UI -. Explicit artifact save/load when configured .-> Gateway[API Gateway HTTP API]
   Gateway --> Lambda[TypeScript Lambda]
   Lambda --> S3[(Private S3 bucket)]
   Lambda --> Logs[CloudWatch Logs]
@@ -109,9 +109,9 @@ This is suitable for a prototype, not production PHI or multi-user data handling
 
 ## Optional AWS Persistence Extension
 
-The Vercel-hosted Next.js frontend can explicitly archive or retrieve one completed `BenchmarkRunHistoryEntry` through an API Gateway HTTP API and TypeScript Lambda. The Lambda stores validated artifacts in a private S3 bucket and emits redacted structured metadata to CloudWatch Logs. AWS resources and least-privilege IAM policies are defined with SAM in `infra/template.yaml`.
+The optional extension was implemented and production-validated with the Vercel-hosted Next.js frontend explicitly archiving or retrieving one completed `BenchmarkRunHistoryEntry` through an API Gateway HTTP API and TypeScript Lambda. Lambda stored validated artifacts in a private S3 bucket and emitted redacted structured metadata to CloudWatch Logs. AWS resources and least-privilege IAM policies remain defined with SAM in `infra/template.yaml`.
 
-This extension does not run benchmarks, replace browser history, introduce a database, or authenticate users. If its public API URL is not configured, no cloud controls or AWS requests are present. See `docs/AWS_ARCHITECTURE.md` for the request contract, idempotency model, validation, IAM, and operational limitations.
+The temporary AWS demonstration infrastructure was torn down after end-to-end validation and is not currently live. The extension does not run benchmarks, replace browser history, introduce a database, or authenticate users. With its public API URL unconfigured, no cloud controls or AWS requests are present. See `docs/AWS_ARCHITECTURE.md` for the request contract, idempotency model, validation evidence, IAM, and operational limitations.
 
 ## Production Architecture Extension
 

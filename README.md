@@ -29,7 +29,7 @@ LLM workflows are hard to trust when prompts, models, and workflow steps behave 
 - Report generation from latest batch runs or merged benchmark history
 - Workspace import/export for prompts, workflows, custom cases, criteria, and run history
 - Run history and merged result analysis for replicate consistency statistics
-- Optional, explicit AWS save/load for completed benchmark artifacts
+- Reproducible, opt-in AWS save/load extension for completed benchmark artifacts
 
 ## Architecture
 
@@ -45,7 +45,7 @@ flowchart TD
   R --> S
   S --> U
   U --> B[Browser Storage]
-  U -. Optional explicit save/load .-> AGW[API Gateway HTTP API]
+  U -. Explicit save/load when configured .-> AGW[API Gateway HTTP API]
   AGW --> L[TypeScript Lambda]
   L --> S3[(Private S3 bucket)]
   L --> CW[CloudWatch Logs]
@@ -55,12 +55,12 @@ The Next.js frontend remains deployed on Vercel. Benchmark execution still uses 
 
 ## AWS Serverless Persistence
 
-AWS provides a deliberately small, optional persistence extension for completed benchmark artifacts:
+An optional AWS serverless persistence extension was implemented and production-validated using API Gateway, Lambda, S3, CloudWatch, IAM, and AWS SAM. The temporary demonstration infrastructure was torn down after end-to-end validation; the infrastructure-as-code remains reproducible from this repository.
 
 ```mermaid
 flowchart TD
   V[Vercel / Next.js]
-  V -->|Explicit Save / Load| A[API Gateway HTTP API]
+  V -->|Explicit Save / Load when configured| A[API Gateway HTTP API]
   A --> L[TypeScript Lambda]
   L --> S3[(Amazon S3)]
   L --> CW[CloudWatch Logs]
@@ -75,8 +75,9 @@ flowchart TD
 - CloudWatch application logs contain only structured request metadata. Request bodies, artifacts, prompts, model outputs, credentials, and provider keys are excluded.
 - The Lambda role grants `s3:GetObject` and `s3:PutObject` only for the artifact prefix, `s3:ListBucket` only for the dedicated bucket, and writes only to the designated log group.
 - API Gateway, Lambda, S3, CloudWatch, IAM, and policies are defined in [AWS SAM](./infra/template.yaml). See [AWS architecture details](./docs/AWS_ARCHITECTURE.md).
+- Validation covered create `201`, idempotent replay `200`, retrieval `200`, same-UUID conflict `409`, missing run `404`, and invalid/secret-containing requests `400`.
 
-This demonstration API has no authentication and no database. It is for synthetic, non-sensitive portfolio data only—not PHI, production clinical infrastructure, or clinically validated decision support.
+No AWS backend is currently live for this project, and the Vercel production deployment has cloud persistence disabled. If reproduced, the demonstration API has no authentication or database and must use synthetic, non-sensitive data only—never PHI or production clinical data. This project is not clinically validated or production SaaS infrastructure.
 
 ## Benchmark Execution Flow
 
@@ -120,7 +121,7 @@ The same platform structure can be adapted to other rule-based evaluation domain
 - Next.js API routes
 - Groq and OpenRouter provider integrations
 - Browser-local MVP persistence with `localStorage` and `sessionStorage`
-- Optional AWS SAM persistence API using API Gateway, Lambda, S3, and CloudWatch Logs
+- Reproducible AWS SAM persistence extension using API Gateway, Lambda, S3, and CloudWatch Logs
 
 ## Screenshots
 
@@ -205,7 +206,7 @@ NEXT_PUBLIC_BENCHMARK_RUNS_API_URL=
 
 API keys are optional when running in mock mode. The MVP also supports browser-session BYOK keys through the UI where available. Never commit real API keys.
 
-`NEXT_PUBLIC_BENCHMARK_RUNS_API_URL` is optional. When it is absent or empty, the Reports cloud controls are hidden and the browser makes no AWS persistence requests. When configured, use the deployed API Gateway base URL without a route suffix. Cloud save/load is a synthetic-data prototype: it is unauthenticated and must not be used for PHI, credentials, or production data.
+`NEXT_PUBLIC_BENCHMARK_RUNS_API_URL` is optional and empty by default. When it is absent or empty, the Reports cloud controls are hidden and the browser makes no AWS persistence requests. If the SAM extension is redeployed, configure its API Gateway base URL without a route suffix. Cloud save/load is an unauthenticated synthetic-data prototype and must not be used for PHI, credentials, or production data.
 
 ## Current MVP Limitations
 

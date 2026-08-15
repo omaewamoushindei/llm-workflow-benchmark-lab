@@ -1,14 +1,18 @@
 # AWS Benchmark Artifact Persistence
 
-Phase 1 adds an optional AWS persistence API for completed benchmark-run artifacts. Phase 2 adds explicit save/load controls to the Reports workspace-sharing section. Neither phase changes benchmark execution, scoring, deterministic reference logic, provider integrations, or the existing browser run-history behavior.
+Phase 1 implemented an optional AWS persistence API for completed benchmark-run artifacts. Phase 2 added explicit save/load controls to the Reports workspace-sharing section. Neither phase changed benchmark execution, scoring, deterministic reference logic, provider integrations, or the existing browser run-history behavior.
 
 The integration is disabled unless `NEXT_PUBLIC_BENCHMARK_RUNS_API_URL` is configured at frontend build time. With the variable absent, cloud controls are hidden and the browser makes no AWS persistence requests, preserving existing application behavior and Vercel compatibility.
+
+## Current deployment status
+
+The extension was deployed to a temporary development stack and production-validated through the Vercel frontend. After evidence was captured, the application stack, SAM bootstrap stack, Lambda, API Gateway resources, log group, execution role, versioned artifact buckets, and SAM staging bucket were fully removed. No project AWS backend is currently live. The Vercel production environment no longer configures the API URL, while the tested SAM infrastructure remains reproducible from this repository.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  App[Vercel / Next.js] -->|Explicit Save / Load| Api[API Gateway HTTP API]
+  App[Vercel / Next.js] -->|Explicit Save / Load when configured| Api[API Gateway HTTP API]
   Api --> Lambda[TypeScript Lambda on Node.js 22]
   Lambda --> S3[(Private S3 bucket)]
   Lambda --> Logs[CloudWatch Logs]
@@ -16,11 +20,11 @@ flowchart LR
 
 AWS Amplify Hosting, authentication, DynamoDB, queues, workflow orchestration, and Lambda-based benchmark execution are intentionally out of scope.
 
-The deployed development stack has been verified in `eu-central-1` with the production Vercel origin explicitly allowed by CORS. The endpoint remains configuration rather than source code: the live API URL is supplied through the Vercel Production environment and is not hardcoded in the client.
+During validation, the temporary development stack ran in `eu-central-1` with the production Vercel origin explicitly allowed by CORS. The endpoint was supplied through environment configuration rather than hardcoded in the client, and that configuration was removed after teardown.
 
 ## Optional Reports integration
 
-Set the public API Gateway base URL only when the prototype cloud feature should be available:
+When reproducing the extension, set the public API Gateway base URL only when the prototype cloud feature should be available:
 
 ```bash
 NEXT_PUBLIC_BENCHMARK_RUNS_API_URL=https://example.execute-api.eu-central-1.amazonaws.com
@@ -102,6 +106,19 @@ Errors use this shape:
 
 Expected status codes are `400`, `404`, `409`, `413`, `415`, `500`, and `503`. Only temporary storage errors are marked retryable.
 
+## Validated behavior
+
+The deployed demonstration passed end-to-end checks for:
+
+- first conditional create: `201`
+- identical idempotent replay: `200`
+- artifact retrieval: `200`
+- same UUID with different content: `409`
+- missing UUID: `404`
+- invalid, incomplete, or secret-containing artifacts: `400`
+
+Production frontend validation also confirmed explicit save/load, successful first import, existing duplicate detection on a second load, clean missing-run handling, and failure isolation from local browser history.
+
 ## S3 and idempotency
 
 Artifacts are stored directly, without another storage envelope, at:
@@ -110,7 +127,7 @@ Artifacts are stored directly, without another storage envelope, at:
 benchmark-runs/v1/{runId}.json
 ```
 
-The bucket has all S3 Block Public Access controls enabled, bucket-owner-enforced ownership, explicit SSE-S3 default encryption, and versioning. CloudFormation generates the bucket name. The bucket is retained when the stack is deleted to avoid accidental artifact loss.
+SAM configures the artifact bucket with all S3 Block Public Access controls enabled, bucket-owner-enforced ownership, explicit SSE-S3 default encryption, and versioning. CloudFormation generates the bucket name. The template retains the bucket when the stack is deleted to avoid accidental artifact loss, so teardown must explicitly remove all versions and delete markers before deleting the bucket.
 
 Every write includes `If-None-Match: *`. S3 therefore creates a new key only when no current object exists. After a conditional-write failure, the Lambda uses its read permission to compare the stored canonical artifact:
 
@@ -168,7 +185,7 @@ The last two commands require the AWS SAM CLI. `sam build` uses the repository's
 
 ## Reproducible deployment and teardown boundary
 
-The development demonstration has been deployed and smoke-tested, but deployment remains a manual, reviewable operation. To reproduce it in a non-production account:
+The development demonstration was deployed, production-validated, and torn down. Deployment remains a manual, reviewable operation. To reproduce it in a non-production account:
 
 1. Install AWS CLI v2 and AWS SAM CLI.
 2. Configure an AWS profile or role for the intended non-production account and Region.
@@ -180,4 +197,4 @@ The development demonstration has been deployed and smoke-tested, but deployment
 8. Smoke-test create, identical replay, conflict, retrieval, secret rejection, and size rejection using synthetic data.
 9. Inspect the Lambda role and CloudWatch logs before enabling the optional frontend integration.
 
-The current AWS resources are temporary portfolio infrastructure, not a production SaaS backend. Teardown is deliberately deferred until frontend evidence has been captured. Because the S3 bucket uses `DeletionPolicy: Retain`, deleting the CloudFormation stack does not delete the bucket or its artifacts; retained buckets require a separate, deliberate administrative cleanup process.
+The validation deployment and all retained/bootstrap resources were removed after frontend evidence was captured. No project AWS resources are intentionally left running. A future reproduction remains temporary portfolio infrastructure, not a production SaaS backend. Because the S3 bucket uses `DeletionPolicy: Retain`, deleting the application stack alone does not delete the bucket or its artifacts; teardown must include a separate, deliberate version-aware cleanup process.
