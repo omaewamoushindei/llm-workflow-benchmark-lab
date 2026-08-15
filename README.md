@@ -1,202 +1,151 @@
 # LLM Workflow Benchmark Lab
 
-Full-stack benchmark platform for evaluating LLM prompts, models, and multi-step workflows.
+**A full-stack platform for comparing LLM models, prompts, and multi-step workflows against deterministic reference logic and configurable scoring criteria.**
+
+Build visual workflows, run batch benchmarks, inspect execution traces, and turn results into ranked reports.
+
+[**Live Demo**](https://v0-clinical-case-input.vercel.app) · [Architecture](./docs/ARCHITECTURE.md) · [Evaluation Methodology](./docs/EVALUATION_METHODOLOGY.md) · [AWS Extension](./docs/AWS_ARCHITECTURE.md)
+
+<img src="./public/Screenshot%202026-06-13%20at%2014-29-40%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Benchmark planning screen showing selected models, workflow configurations, scoring criteria, and execution progress" width="100%" />
+
+*Plan and execute a benchmark across model baselines, structured prompts, and reusable workflows.*
 
 ## Overview
 
-LLM Workflow Benchmark Lab benchmarks raw LLM calls, structured prompts, and multi-step workflows by comparing their outputs against deterministic reference logic. The included example workspace uses a PCT-guided antibiotic stewardship scenario as a case study, with configurable scoring criteria, workflow execution traces, benchmark dashboards, generated reports, run history, and workspace import/export.
+LLM applications become difficult to evaluate when model choice, prompt structure, and workflow composition all affect the result. LLM Workflow Benchmark Lab makes those configurations testable, comparable, and traceable. It executes the same cases across selected configurations, evaluates outputs against deterministic reference checks, and exposes both aggregate scores and case-level evidence.
 
-> **Disclaimer**
->
-> This project is a prototype for evaluating LLM workflow behavior against deterministic reference logic. It is **not** a clinical decision-support system, is **not** clinically validated, and must **not** be used for medical decisions.
+The included PCT-guided antibiotic stewardship workspace is a domain-specific example, not the scope of the platform itself. The underlying benchmark structure can be adapted to other evaluation domains with explicit reference logic.
 
-## Why This Project Exists
+## Core Capabilities
 
-LLM workflows are hard to trust when prompts, models, and workflow steps behave inconsistently across edge cases. This platform makes model/prompt/workflow configurations testable, comparable, and traceable so teams can inspect where a configuration succeeds, fails, or produces unsafe or inconsistent reasoning.
+- Compare raw model calls, structured prompts, and multi-step workflows across Groq and OpenRouter models.
+- Build reusable linear workflows visually, with configurable models, prompts, step types, and input sources.
+- Evaluate outputs against deterministic reference logic separated from model generation.
+- Configure weighted scoring for recommendation match, criterion alignment, safety, and explainability.
+- Run batch benchmarks across selected cases and configurations with progress and failure reporting.
+- Inspect case-level results and step-by-step workflow execution traces.
+- Generate ranked reports and analyze merged run history, including replicate consistency.
+- Import or export prompts, workflows, custom cases, criteria, settings, and benchmark history as a workspace.
+- Explicitly save or load completed run artifacts through an optional AWS persistence extension when configured.
 
-## Key Features
+## Product Screenshots
 
-- BYOK provider connections for browser-session API keys
-- Groq and OpenRouter model selection
-- Prompt Library for transparent prompt inspection, editing, duplication, export, and import
-- Visual Workflow Builder for linear multi-step LLM workflows
-- Deterministic PCT reference evaluator for the case-study benchmark
-- Batch benchmark runner across selected cases and benchmark configurations
-- Run controls for delays, retries, max output tokens, max cases, and max configs
-- Scoring criteria for recommendation match, criterion alignment, safety, and explainability
-- Workflow execution traces showing step inputs, prior outputs, parsing status, and output previews
-- Benchmark Results dashboard with case-level and configuration-level metrics
-- Report generation from latest batch runs or merged benchmark history
-- Workspace import/export for prompts, workflows, custom cases, criteria, and run history
-- Run history and merged result analysis for replicate consistency statistics
-- Reproducible, opt-in AWS save/load extension for completed benchmark artifacts
+### Visual Workflow Builder
 
-## Architecture
+Compose and validate reusable multi-step workflows, including chained LLM, verification, and final-report steps.
 
-```mermaid
-flowchart TD
-  U[Browser UI] --> C[Build Configs]
-  C --> A[Next.js API Routes]
-  A --> P[Provider Abstraction]
-  P --> G[Groq]
-  P --> O[OpenRouter]
-  A --> R[Reference Checks]
-  A --> S[Scoring]
-  R --> S
-  S --> U
-  U --> B[Browser Storage]
-  U -. Explicit save/load when configured .-> AGW[API Gateway HTTP API]
-  AGW --> L[TypeScript Lambda]
-  L --> S3[(Private S3 bucket)]
-  L --> CW[CloudWatch Logs]
-```
-
-The Next.js frontend remains deployed on Vercel. Benchmark execution still uses the existing Next.js API routes; it has not been moved to Lambda.
-
-## AWS Serverless Persistence
-
-An optional AWS serverless persistence extension was implemented and production-validated using API Gateway, Lambda, S3, CloudWatch, IAM, and AWS SAM. The temporary demonstration infrastructure was torn down after end-to-end validation; the infrastructure-as-code remains reproducible from this repository.
-
-```mermaid
-flowchart TD
-  V[Vercel / Next.js]
-  V -->|Explicit Save / Load when configured| A[API Gateway HTTP API]
-  A --> L[TypeScript Lambda]
-  L --> S3[(Amazon S3)]
-  L --> CW[CloudWatch Logs]
-```
-
-- The Reports page exposes explicit **Save Run to AWS** and **Load Cloud Run** actions only when `NEXT_PUBLIC_BENCHMARK_RUNS_API_URL` is configured.
-- Browser `localStorage` remains the default run-history store. Cloud timeouts, network errors, and rejected artifacts do not modify local history.
-- Artifacts reuse the existing `BenchmarkRunHistoryEntry` shape and are addressed by browser-generated UUIDs under `benchmark-runs/v1/{runId}.json`.
-- Lambda validates completed-run structure, enforces a 4 MiB application limit, and recursively rejects likely secret or authentication fields and values.
-- S3 writes use `If-None-Match: *`: the first write creates the object, an identical retry is idempotent, and different content under the same UUID returns a conflict without overwriting.
-- The private, versioned bucket uses S3 Block Public Access and SSE-S3. Bucket-level `s3:ListBucket` allows a missing `GetObject` to produce correct `404` semantics.
-- CloudWatch application logs contain only structured request metadata. Request bodies, artifacts, prompts, model outputs, credentials, and provider keys are excluded.
-- The Lambda role grants `s3:GetObject` and `s3:PutObject` only for the artifact prefix, `s3:ListBucket` only for the dedicated bucket, and writes only to the designated log group.
-- API Gateway, Lambda, S3, CloudWatch, IAM, and policies are defined in [AWS SAM](./infra/template.yaml). See [AWS architecture details](./docs/AWS_ARCHITECTURE.md).
-- Validation covered create `201`, idempotent replay `200`, retrieval `200`, same-UUID conflict `409`, missing run `404`, and invalid/secret-containing requests `400`.
-
-No AWS backend is currently live for this project, and the Vercel production deployment has cloud persistence disabled. If reproduced, the demonstration API has no authentication or database and must use synthetic, non-sensitive data only—never PHI or production clinical data. This project is not clinically validated or production SaaS infrastructure.
-
-## Benchmark Execution Flow
-
-1. The user selects benchmark cases and configurations.
-2. The browser builds the batch request.
-3. The Next.js API executes model-only or workflow configurations.
-4. Deterministic reference checks and scoring are applied.
-5. Results are returned to the browser.
-6. Run history and reports are stored in browser-local MVP storage.
-
-## Evaluation Methodology
-
-- **Recommendation Match**: whether the final model recommendation matches the deterministic reference label.
-- **Criterion Alignment**: whether the model correctly reports intermediate rule checks such as thresholds, PCT decline, clinical improvement, exclusion flags, and discontinuation gate status.
-- **Safety Risk Detection**: whether the output avoids unsafe discontinuation claims, surfaces caution conditions, and handles insufficient information appropriately.
-- **Explainability**: whether reasoning is grounded in the provided structured fields, PCT calculations, and benchmark criteria.
-- **Reference Logic Limitation**: the reference evaluator is a deterministic rule proxy for benchmarking. It is not a clinical gold standard and does not represent real-world clinical validation.
-
-## Example Workspace: PCT Case Study
-
-The PCT antibiotic stewardship scenario is included only as a domain-specific benchmark case study. It demonstrates how LLM workflows can be evaluated against explicit rule logic and structured inputs.
-
-Benchmark-critical inputs include:
-
-- infection context
-- current PCT
-- peak or previous PCT
-- calculated PCT decline
-- clinical improvement status
-- exclusion or caution flags
-
-The same platform structure can be adapted to other rule-based evaluation domains where deterministic reference checks are available.
-
-## Tech Stack
-
-- Next.js App Router
-- React
-- TypeScript
-- Tailwind CSS
-- shadcn/ui-style component primitives
-- Next.js API routes
-- Groq and OpenRouter provider integrations
-- Browser-local MVP persistence with `localStorage` and `sessionStorage`
-- Reproducible AWS SAM persistence extension using API Gateway, Lambda, S3, and CloudWatch Logs
-
-## Screenshots
-
-### Benchmark Planning and Progress
-
-Configure benchmark cases, model and prompt baselines, multi-step workflows, scoring criteria, run controls, and estimated execution progress.
-
-<img src="./public/Screenshot%202026-06-13%20at%2014-29-40%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Benchmark planning and progress screen showing benchmark configuration and execution progress" width="100%" />
-
-### Visual Workflow Configuration
-
-Build and validate reusable multi-step LLM workflows with per-step model, prompt template, step type, and input-source configuration.
-
-<img src="./public/Screenshot%202026-06-13%20at%2014-53-55%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Visual workflow configuration screen showing multi-step workflow settings" width="100%" />
+<img src="./public/Screenshot%202026-06-13%20at%2014-53-55%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Visual workflow builder showing an enabled four-step evaluation pipeline" width="100%" />
 
 ### Benchmark Results
 
-Compare model, prompt, and workflow configurations using aggregate metrics, case-level scoring, and workflow execution traces.
+Compare configuration-level aggregates, case-level scores, failures, and workflow traces.
 
-<img src="./public/Screenshot%202026-06-13%20at%2014-32-04%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Benchmark results dashboard showing aggregate metrics and case-level workflow traces" width="100%" />
+<img src="./public/Screenshot%202026-06-13%20at%2014-32-04%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Benchmark results dashboard with aggregate metrics and case-level configuration results" width="100%" />
 
-### Ranked Evaluation Report
+### Ranked Reports
 
-Review executive metrics, the active evaluation rubric, ranked configurations, failure findings, and documented limitations.
+Review the evaluation rubric, executive metrics, ranked configurations, findings, and documented limitations.
 
-<img src="./public/Screenshot%202026-06-13%20at%2014-32-21%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Ranked evaluation report showing rubric, configuration rankings, findings, and limitations" width="100%" />
+<img src="./public/Screenshot%202026-06-13%20at%2014-32-21%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Ranked evaluation report with scoring rubric and configuration rankings" width="100%" />
 
 <details>
 <summary><strong>Additional product screens</strong></summary>
 
 ### Provider and Model Setup
 
-Connect BYOK providers, load provider model catalogs, select models, and inspect configurable evaluation criteria.
+Connect browser-session BYOK providers, load model catalogs, choose models, and configure evaluation criteria.
 
-<img src="./public/Screenshot%202026-06-13%20at%2014-56-17%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Provider and model setup screen showing BYOK connections, model selection, and criteria controls" width="100%" />
+<img src="./public/Screenshot%202026-06-13%20at%2014-56-17%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Provider and model setup with BYOK connections and evaluation criteria" width="100%" />
 
-### Single Case Execution
+### Single-Case Execution
 
-Run one structured case through a selected ranked configuration while keeping deterministic reference checks and optional context visible.
+Run one structured case through a selected configuration while keeping reference checks and context visible.
 
-<img src="./public/Screenshot%202026-06-13%20at%2014-49-05%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Single case execution screen showing configuration selection, structured case fields, and reference checks" width="100%" />
+<img src="./public/Screenshot%202026-06-13%20at%2014-49-05%20LLM%20Workflow%20Benchmark%20Lab.png" alt="Single-case execution workspace with structured inputs and reference checks" width="100%" />
 
 </details>
 
+## How the Benchmark Works
+
+1. Select benchmark cases, provider models, prompt baselines, and enabled workflows.
+2. Build a shared batch containing raw, structured-prompt, and workflow configurations.
+3. Execute each configuration through the existing Next.js evaluation API and provider integrations.
+4. Apply deterministic reference checks and structured scoring to the returned outputs.
+5. Present configuration aggregates, case-level evidence, workflow traces, and ranked reports.
+6. Preserve completed runs in browser-local history for later merging, reporting, and workspace export.
+
+The scoring rubric measures recommendation match, criterion alignment, safety risk handling, and explainability. These scores measure alignment with the implemented benchmark rules—not real-world or clinical superiority.
+
+## Implemented Architecture
+
+```mermaid
+flowchart LR
+  subgraph Benchmark[Benchmark execution]
+    UI[Browser / Next.js UI] --> API[Next.js evaluation API]
+    API --> Providers[Groq / OpenRouter]
+    API --> Reference[Deterministic reference checks]
+    Providers --> Scoring[Structured scoring]
+    Reference --> Scoring
+    Scoring --> UI
+  end
+
+  subgraph Persistence[Optional cloud persistence]
+    Reports[Reports UI] -. When configured .-> Gateway[API Gateway]
+    Gateway --> Lambda[TypeScript Lambda]
+    Lambda --> S3[(S3 artifacts)]
+    Lambda --> Logs[CloudWatch]
+  end
+```
+
+Benchmark execution remains in the Next.js API routes. Lambda stores and retrieves completed benchmark artifacts only; it does not execute models or scoring logic.
+
+## Engineering Highlights
+
+- Next.js App Router and TypeScript across the frontend, evaluation APIs, cloud client, and Lambda.
+- Groq and OpenRouter BYOK integrations, with browser-session keys separated from saved workspaces and artifacts.
+- Structured benchmark, normalization, deterministic reference, and weighted-scoring pipeline.
+- Reusable workflow execution with typed step configuration and inspectable traces.
+- Browser-local, mergeable run history with duplicate and conflict handling plus full workspace import/export.
+- Typed boundary validation and explicit error handling for provider, workspace, and cloud operations.
+- AWS SAM infrastructure as code for API Gateway, Lambda, S3, CloudWatch, and IAM.
+- UUID-addressed, conditional S3 writes with idempotent retries and overwrite conflict detection.
+- Recursive secret rejection, structured/redacted logs, and least-privilege runtime IAM.
+
+## Optional AWS Serverless Persistence
+
+The Reports UI includes an explicit opt-in persistence path: **API Gateway → TypeScript Lambda → S3 + CloudWatch**. It is defined with AWS SAM and keeps browser-local history as the default. Conditional writes make identical retries idempotent while rejecting different content under the same UUID; validation enforces completed artifacts, a 4 MiB limit, and secret-pattern rejection. S3 remains private, encrypted, and versioned, while Lambda uses redacted structured logging and least-privilege IAM.
+
+The extension was deployed and production-validated through the Vercel frontend. The temporary AWS demonstration infrastructure was then fully torn down, so **no AWS backend is currently live**. The reproducible implementation, tests, and deployment guidance remain in [the AWS architecture document](./docs/AWS_ARCHITECTURE.md).
+
+## Example Workspace: PCT Case Study
+
+The included workspace uses synthetic PCT-guided antibiotic stewardship cases to demonstrate structured inputs, threshold and decline calculations, exclusion flags, deterministic reference checks, configurable scoring, and multi-step workflow evaluation. A ready-to-import example is available at [`examples/pct-demo-workspace.json`](./examples/pct-demo-workspace.json).
+
+> **Clinical and data disclaimer:** This is an LLM workflow benchmarking prototype, not clinical decision support. It is not clinically validated and must not be used for medical decisions. Use synthetic, non-sensitive data only—never PHI.
+
+## Tech Stack
+
+- **Application:** Next.js 16 App Router, React 19, TypeScript, Tailwind CSS, shadcn/ui-style primitives
+- **Evaluation APIs:** Next.js route handlers, Groq, OpenRouter
+- **Persistence:** browser `localStorage` / `sessionStorage`; optional AWS artifact persistence
+- **AWS extension:** API Gateway HTTP API, Node.js 22 Lambda, S3, CloudWatch Logs, IAM, AWS SAM
+- **Validation and testing:** Zod, Node test runner through `tsx`, TypeScript compiler, Next.js and SAM builds
+
 ## Local Setup
 
-This repository uses `npm` with the committed `package-lock.json`.
+This repository uses `npm` and includes a committed `package-lock.json`.
 
 ```bash
 npm install
+copy .env.example .env.local
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+Open `http://localhost:3000`. Mock mode works without provider API keys; browser-session BYOK can be configured through the UI where supported.
 
-Optional: import the sample workspace from `examples/pct-demo-workspace.json` through the Reports workspace import UI.
-It contains safe synthetic PCT demo cases, prompts, workflows, criteria/settings, and no API keys or provider outputs.
+Relevant optional environment variables:
 
-Type-check:
-
-```bash
-npm run typecheck
-```
-
-Build:
-
-```bash
-npm run build
-```
-
-## Environment Variables
-
-Copy `.env.example` to `.env.local` for local development.
-
-```bash
+```dotenv
 USE_MOCK_LLM=true
 OPENROUTER_API_KEY=
 GROQ_API_KEY=
@@ -204,30 +153,42 @@ NEXT_PUBLIC_SITE_URL=http://localhost:3000
 NEXT_PUBLIC_BENCHMARK_RUNS_API_URL=
 ```
 
-API keys are optional when running in mock mode. The MVP also supports browser-session BYOK keys through the UI where available. Never commit real API keys.
+Leave `NEXT_PUBLIC_BENCHMARK_RUNS_API_URL` empty unless the SAM extension has been deployed. When empty, cloud controls are hidden and the browser makes no AWS persistence requests. Never commit real provider or AWS credentials.
 
-`NEXT_PUBLIC_BENCHMARK_RUNS_API_URL` is optional and empty by default. When it is absent or empty, the Reports cloud controls are hidden and the browser makes no AWS persistence requests. If the SAM extension is redeployed, configure its API Gateway base URL without a route suffix. Cloud save/load is an unauthenticated synthetic-data prototype and must not be used for PHI, credentials, or production data.
+## Testing and Validation
 
-## Current MVP Limitations
+```bash
+npm run test:cloud
+npm run typecheck
+npm run build
+npm run sam:validate
+npm run sam:build
+```
 
-- No database
-- No authentication
-- Browser-local persistence remains the default; optional AWS artifact persistence is explicit and unauthenticated
-- No production PHI handling
-- Provider rate limits can affect larger benchmark runs
-- Vercel/serverless timeout risk for long batch evaluations
-- No clinical validation
-- Deterministic reference logic is a benchmark proxy, not a clinical standard
-- Mock/demo report fallback may appear when no batch run exists
+- Cloud persistence and client tests: **11/11 passing**.
+- TypeScript checking and the Next.js production build pass.
+- The SAM template validates and the Node.js 22 Lambda bundles successfully.
+- The temporary persistence deployment was smoke-tested end to end through the production Vercel frontend before teardown, including create, replay, retrieve, conflict, missing-run, validation, secret-rejection, and log-redaction behavior.
 
-## Future Production Architecture
+These checks demonstrate the captured implementation state; they do not imply continuous production monitoring.
 
-For production, Next.js would remain the frontend and API gateway. The platform would add:
+## Current Limitations
 
-- database-backed workspaces and run history
-- authentication and authorization
-- encrypted provider key storage or managed secret delegation
-- background queues and workers for long benchmark runs
-- centralized logs and observability
-- audit trails for prompt, workflow, and scoring changes
-- real-time progress via SSE or WebSockets
+- Browser-local storage remains the primary persistence layer; there is no application database or multi-user workspace model.
+- The optional AWS demonstration API has no authentication and is not currently deployed.
+- Provider rate limits and serverless timeouts can constrain larger or longer benchmark runs.
+- Deterministic reference logic is a benchmark proxy rather than a universal ground truth.
+- Mock/demo report fallback may appear when no batch run exists.
+
+## Documentation
+
+- [System architecture](./docs/ARCHITECTURE.md)
+- [AWS persistence architecture and API contracts](./docs/AWS_ARCHITECTURE.md)
+- [Evaluation methodology](./docs/EVALUATION_METHODOLOGY.md)
+- [Workflow model](./docs/WORKFLOWS.md)
+- [Security and BYOK boundaries](./docs/SECURITY_AND_BYOK.md)
+- [Known limitations](./docs/LIMITATIONS.md)
+
+## Future Direction
+
+Potential future work—not currently implemented—includes authenticated database-backed workspaces, managed secret delegation, queued benchmark workers, audit trails, and real-time progress updates.
