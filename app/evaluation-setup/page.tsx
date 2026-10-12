@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { benchmarkCases, type BenchmarkCase } from "@/lib/benchmark-cases"
+import { reconcileSelectedProviderModels } from "@/lib/llm-providers"
 import {
   EVALUATION_CRITERIA_STORAGE_KEY,
   LATEST_EVALUATION_CRITERIA_STORAGE_KEY,
@@ -1030,6 +1031,7 @@ export default function EvaluationSetupPage() {
 
       const nextModels = json.models ?? []
       setAvailableModels(nextModels)
+      setSelectedModels((current) => reconcileSelectedProviderModels(current, nextModels))
       window.sessionStorage.setItem("latestProviderModelCatalog", JSON.stringify({
         providerId: selectedProviderId,
         models: nextModels,
@@ -1066,6 +1068,7 @@ export default function EvaluationSetupPage() {
     setAvailableModels([])
     setModelTestResults({})
     setModelsError(null)
+    setFreeOnly(false)
   }
 
   const toggleCriterionEnabled = (criterionId: string) => {
@@ -1372,16 +1375,6 @@ export default function EvaluationSetupPage() {
       }
     })
   }, [availableModels, freeOnly, modelSearch, providerFilter, sortOption, structuredOnly, textOnly])
-
-  useEffect(() => {
-    if (selectedProviderId !== "groq") return
-    if (availableModels.length === 0 || filteredModels.length > 0) return
-    if (!freeOnly && !textOnly && !structuredOnly) return
-
-    setFreeOnly(false)
-    setTextOnly(false)
-    setStructuredOnly(false)
-  }, [availableModels.length, filteredModels.length, freeOnly, selectedProviderId, structuredOnly, textOnly])
 
   const allBenchmarkCases = useMemo(
     () => [...benchmarkCases, ...customBenchmarkCases],
@@ -2639,9 +2632,20 @@ export default function EvaluationSetupPage() {
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                      <div className="flex items-center justify-between rounded-lg border border-border p-3">
-                        <Label htmlFor="freeOnly" className="text-sm">Free models only</Label>
-                        <Switch id="freeOnly" checked={freeOnly} onCheckedChange={setFreeOnly} />
+                      <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+                        <Label htmlFor="freeOnly" className="text-sm">
+                          Free models only
+                          {selectedProviderId === "groq" ? (
+                            <span className="mt-1 block text-xs font-normal text-muted-foreground">OpenRouter only</span>
+                          ) : null}
+                        </Label>
+                        <Switch
+                          id="freeOnly"
+                          checked={freeOnly}
+                          onCheckedChange={setFreeOnly}
+                          disabled={selectedProviderId === "groq"}
+                          aria-describedby={selectedProviderId === "groq" ? "groqPricingNote" : undefined}
+                        />
                       </div>
                       <div className="flex items-center justify-between rounded-lg border border-border p-3">
                         <Label htmlFor="textOnly" className="text-sm">Text-only models only</Label>
@@ -2654,7 +2658,14 @@ export default function EvaluationSetupPage() {
                     </div>
 
                     <p className="text-xs text-muted-foreground">
-                      Provider model metadata varies. If no models appear, disable filters or refresh models.
+                      {selectedProviderId === "groq" ? (
+                        <span id="groqPricingNote">
+                          Groq's models API does not include per-model pricing, so a reliable free-only filter is unavailable.
+                          The catalog still shows the models currently returned for your Groq key; plan limits apply.
+                        </span>
+                      ) : (
+                        "Provider model metadata varies. If no models appear, disable filters or refresh models."
+                      )}
                     </p>
 
                     <p className="text-xs text-muted-foreground">

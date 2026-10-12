@@ -82,6 +82,17 @@ export function getMockProviderModels(providerId: LlmProviderId): NormalizedProv
   }))
 }
 
+export function reconcileSelectedProviderModels(
+  selectedModelIds: string[],
+  availableModels: Array<Pick<NormalizedProviderModel, "id">>,
+  limit = 3,
+): string[] {
+  const availableModelIds = new Set(availableModels.map((model) => model.id))
+  return Array.from(new Set(selectedModelIds))
+    .filter((modelId) => availableModelIds.has(modelId))
+    .slice(0, Math.max(0, limit))
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
 }

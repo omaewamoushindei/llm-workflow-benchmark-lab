@@ -165,7 +165,7 @@ npm run sam:validate
 npm run sam:build
 ```
 
-- Benchmark logic, mock-mode API, and provider-catalog regression tests: **9/9 passing**.
+- Benchmark logic, mock-mode API, and provider-catalog regression tests: **10/10 passing**.
 - Cloud persistence and client tests: **11/11 passing**.
 - TypeScript checking and the Next.js production build pass.
 - The SAM template validates and the Node.js 22 Lambda bundles successfully.

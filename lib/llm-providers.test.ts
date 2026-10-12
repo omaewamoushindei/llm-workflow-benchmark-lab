@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { fetchProviderModels, getMockProviderModels } from './llm-providers'
+import {
+  fetchProviderModels,
+  getMockProviderModels,
+  reconcileSelectedProviderModels,
+} from './llm-providers'
 
 test('mock provider catalogs contain only explicit synthetic models', () => {
   for (const providerId of ['groq', 'openrouter'] as const) {
@@ -26,4 +30,15 @@ test('provider catalog authentication failures are surfaced instead of returning
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('refreshed catalogs remove retired selections before enforcing the selection limit', () => {
+  const selected = ['retired-a', 'retired-b', 'retired-c']
+  const available = [{ id: 'current-a' }, { id: 'current-b' }]
+
+  assert.deepEqual(reconcileSelectedProviderModels(selected, available), [])
+  assert.deepEqual(
+    reconcileSelectedProviderModels(['current-a', 'retired-a', 'current-a', 'current-b'], available),
+    ['current-a', 'current-b'],
+  )
 })
