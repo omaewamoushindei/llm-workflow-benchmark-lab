@@ -151,7 +151,6 @@ export interface RunControls {
   maxRetries: number
   retryBackoffMode: 'provider_hint' | 'exponential'
   maxOutputTokens: number
-  compactPromptMode: boolean
   continueOnError: boolean
   stopAfterFailureRatePercent: number
   maxCasesPerRun: number

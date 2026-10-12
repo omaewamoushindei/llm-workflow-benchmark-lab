@@ -67,41 +67,20 @@ const PROVIDERS: Record<LlmProviderId, LlmProviderConfig> = {
   },
 }
 
-const STATIC_GROQ_MODELS: NormalizedProviderModel[] = [
-  {
-    id: "llama-3.1-8b-instant",
-    name: "Llama 3.1 8B Instant",
-    provider: "groq",
-    contextLength: 131072,
-    promptPrice: null,
-    completionPrice: null,
-    isFree: false,
-    supportsStructuredOutput: true,
-    raw: { source: "static_fallback" },
-  },
-  {
-    id: "llama-3.3-70b-versatile",
-    name: "Llama 3.3 70B Versatile",
-    provider: "groq",
-    contextLength: 131072,
-    promptPrice: null,
-    completionPrice: null,
-    isFree: false,
-    supportsStructuredOutput: true,
-    raw: { source: "static_fallback" },
-  },
-  {
-    id: "gemma2-9b-it",
-    name: "Gemma2 9B IT",
-    provider: "groq",
+export function getMockProviderModels(providerId: LlmProviderId): NormalizedProviderModel[] {
+  return [
+    { id: `mock/${providerId}-baseline`, name: "Mock Baseline", promptPrice: "0", completionPrice: "0" },
+    { id: `mock/${providerId}-structured`, name: "Mock Structured", promptPrice: "0", completionPrice: "0" },
+    { id: `mock/${providerId}-verifier`, name: "Mock Verifier", promptPrice: "0", completionPrice: "0" },
+  ].map((model) => ({
+    ...model,
+    provider: providerId,
     contextLength: 8192,
-    promptPrice: null,
-    completionPrice: null,
-    isFree: false,
+    isFree: true,
     supportsStructuredOutput: true,
-    raw: { source: "static_fallback" },
-  },
-]
+    raw: { source: "mock_mode" },
+  }))
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
@@ -253,7 +232,7 @@ export async function fetchProviderModels(
   const provider = getProviderConfig(providerId)
 
   if (!provider.modelsEndpoint) {
-    return providerId === "groq" ? STATIC_GROQ_MODELS : []
+    return []
   }
 
   const response = await fetch(provider.modelsEndpoint, {
@@ -267,7 +246,6 @@ export async function fetchProviderModels(
   const body = (await response.json().catch(() => null)) as ProviderModelResponse | null
 
   if (!response.ok) {
-    if (providerId === "groq") return STATIC_GROQ_MODELS
     const message = body?.error?.message || `${provider.label} models request failed with status ${response.status}`
     throw new Error(message)
   }
@@ -281,5 +259,5 @@ export async function fetchProviderModels(
     )
     .filter((model): model is NormalizedProviderModel => !!model)
 
-  return providerId === "groq" && models.length === 0 ? STATIC_GROQ_MODELS : models
+  return models
 }

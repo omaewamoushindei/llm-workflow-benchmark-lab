@@ -878,15 +878,11 @@ export default function EvaluationSetupPage() {
   const [editingCriterionId, setEditingCriterionId] = useState<string | null>(null)
   const [criterionDraft, setCriterionDraft] = useState<CriterionDraft | null>(null)
   const [numberOfCases, setNumberOfCases] = useState("10")
-  const [batchRun, setBatchRun] = useState(true)
-  const [storeOutputs, setStoreOutputs] = useState(true)
-  const [generateReport, setGenerateReport] = useState(true)
   const [batchDelayMs, setBatchDelayMs] = useState("2000")
   const [workflowStepDelayMs, setWorkflowStepDelayMs] = useState("2000")
   const [batchMaxRetries, setBatchMaxRetries] = useState("2")
   const [retryBackoffMode, setRetryBackoffMode] = useState<RunControls["retryBackoffMode"]>("provider_hint")
   const [maxOutputTokens, setMaxOutputTokens] = useState("600")
-  const [compactPromptMode, setCompactPromptMode] = useState(true)
   const [continueOnError, setContinueOnError] = useState(true)
   const [stopAfterFailureRatePercent, setStopAfterFailureRatePercent] = useState("100")
   const [maxConfigsPerRun, setMaxConfigsPerRun] = useState("25")
@@ -1016,10 +1012,6 @@ export default function EvaluationSetupPage() {
 
     try {
       const providerKey = providerApiKeys[selectedProviderId]?.key
-      if (!providerKey) {
-        throw new Error("Connect an API key for this provider first.")
-      }
-
       const response = await fetch("/api/models", {
         method: "POST",
         headers: {
@@ -1832,7 +1824,6 @@ export default function EvaluationSetupPage() {
     maxRetries: readBoundedNumber(batchMaxRetries, 2, 5),
     retryBackoffMode,
     maxOutputTokens: readBoundedNumber(maxOutputTokens, 600, 2000),
-    compactPromptMode,
     continueOnError,
     stopAfterFailureRatePercent: readBoundedNumber(stopAfterFailureRatePercent, 100, 100),
     maxCasesPerRun: readBoundedNumber(numberOfCases, selectedBenchmarkCaseIds.length || allBenchmarkCases.length, 500),
@@ -1962,10 +1953,6 @@ export default function EvaluationSetupPage() {
         estimatedRemainingSeconds: null,
         warning: null,
       })
-
-      if (!apiKey) {
-        throw new Error("Connect an API key for the selected provider first.")
-      }
 
       setBenchmarkProgress((current) => ({
         ...current,
@@ -4018,14 +4005,6 @@ export default function EvaluationSetupPage() {
                     />
                   </div>
                   
-                  <div className="flex items-center justify-between py-2">
-                    <div>
-                      <Label className="text-sm font-medium">Batch run</Label>
-                      <p className="text-xs text-muted-foreground">Process all cases in sequence</p>
-                    </div>
-                    <Switch checked={batchRun} onCheckedChange={setBatchRun} />
-                  </div>
-
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 rounded-lg border border-border p-3">
                     <div className="md:col-span-2">
                       <p className="text-sm font-medium text-foreground">Run Controls</p>
@@ -4114,13 +4093,6 @@ export default function EvaluationSetupPage() {
                     </div>
                     <div className="flex items-center justify-between rounded-lg border border-border p-3">
                       <div>
-                        <Label className="text-sm font-medium">Compact prompt mode</Label>
-                        <p className="text-xs text-muted-foreground">Use shorter provider outputs for batch runs.</p>
-                      </div>
-                      <Switch checked={compactPromptMode} onCheckedChange={setCompactPromptMode} />
-                    </div>
-                    <div className="flex items-center justify-between rounded-lg border border-border p-3">
-                      <div>
                         <Label className="text-sm font-medium">Continue on error</Label>
                         <p className="text-xs text-muted-foreground">Keep partial successful results visible.</p>
                       </div>
@@ -4131,21 +4103,6 @@ export default function EvaluationSetupPage() {
                     </p>
                   </div>
                   
-                  <div className="flex items-center justify-between py-2">
-                    <div>
-                      <Label className="text-sm font-medium">Store outputs</Label>
-                      <p className="text-xs text-muted-foreground">Store outputs in browser session for this demo</p>
-                    </div>
-                    <Switch checked={storeOutputs} onCheckedChange={setStoreOutputs} />
-                  </div>
-                  
-                  <div className="flex items-center justify-between py-2">
-                    <div>
-                      <Label className="text-sm font-medium">Generate summary report</Label>
-                      <p className="text-xs text-muted-foreground">Generate report page</p>
-                    </div>
-                    <Switch checked={generateReport} onCheckedChange={setGenerateReport} />
-                  </div>
                 </CardContent>
               </Card>
               )}
@@ -4469,14 +4426,14 @@ export default function EvaluationSetupPage() {
                   <p className="text-xs font-medium text-muted-foreground mb-2">Run Settings</p>
                   <div className="flex flex-wrap gap-2">
                     <Badge variant="outline">{selectedBenchmarkCaseIds.length || allBenchmarkCases.length} benchmark cases</Badge>
-                    {batchRun && <Badge variant="outline">Batch</Badge>}
+                    <Badge variant="outline">Batch</Badge>
                     <Badge variant="outline">{summaryDelayMs} ms delay</Badge>
                     <Badge variant="outline">{summaryRunControls.delayBetweenWorkflowStepsMs} ms step delay</Badge>
                     <Badge variant="outline">{summaryMaxRetries} retries</Badge>
                     <Badge variant="outline">{summaryRunControls.maxOutputTokens} max tokens</Badge>
                     <Badge variant="outline">{summaryRunControls.retryBackoffMode}</Badge>
-                    {storeOutputs && <Badge variant="outline">Store outputs</Badge>}
-                    {generateReport && <Badge variant="outline">Report</Badge>}
+                    <Badge variant="outline">Browser history</Badge>
+                    <Badge variant="outline">Report</Badge>
                   </div>
                 </div>
               </div>

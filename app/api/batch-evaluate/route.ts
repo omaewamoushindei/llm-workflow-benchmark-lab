@@ -85,78 +85,11 @@ const DEFAULT_RUN_CONTROLS: RunControls = {
   maxRetries: DEFAULT_MAX_RETRIES,
   retryBackoffMode: 'provider_hint',
   maxOutputTokens: 600,
-  compactPromptMode: true,
   continueOnError: true,
   stopAfterFailureRatePercent: 100,
   maxCasesPerRun: 50,
   maxConfigsPerRun: 25,
 }
-
-const OPENROUTER_FALLBACK_CONFIGS: ProviderEvaluationConfig[] = [
-  {
-    configId: 'meta-llama-llama-3.2-3b-instruct-free_baseline',
-    modelLabel: 'Llama 3.2 3B Instruct Free',
-    modelId: 'meta-llama/llama-3.2-3b-instruct:free',
-    label: 'Llama 3.2 3B Baseline',
-    providerId: 'openrouter',
-    workflowType: 'raw_baseline',
-    modelIds: ['meta-llama/llama-3.2-3b-instruct:free'],
-    promptStrategy: 'baseline',
-  },
-  {
-    configId: 'google-gemma-3-4b-it-free_structured',
-    modelLabel: 'Gemma 3 4B IT Free',
-    modelId: 'google/gemma-3-4b-it:free',
-    label: 'Gemma 3 Structured',
-    providerId: 'openrouter',
-    workflowType: 'structured_prompt',
-    modelIds: ['google/gemma-3-4b-it:free'],
-    promptStrategy: 'structured',
-  },
-  {
-    configId: 'mistralai-mistral-7b-instruct-free_verification',
-    modelLabel: 'Mistral 7B Instruct Free',
-    modelId: 'mistralai/mistral-7b-instruct:free',
-    label: 'Mistral Verification',
-    providerId: 'openrouter',
-    workflowType: 'verification',
-    modelIds: ['mistralai/mistral-7b-instruct:free'],
-    promptStrategy: 'verification',
-  },
-]
-
-const GROQ_FALLBACK_CONFIGS: ProviderEvaluationConfig[] = [
-  {
-    configId: 'groq-llama-3.1-8b-instant_baseline',
-    modelLabel: 'Llama 3.1 8B Instant',
-    modelId: 'llama-3.1-8b-instant',
-    label: 'Llama 3.1 Baseline',
-    providerId: 'groq',
-    workflowType: 'raw_baseline',
-    modelIds: ['llama-3.1-8b-instant'],
-    promptStrategy: 'baseline',
-  },
-  {
-    configId: 'groq-gemma2-9b-it_structured',
-    modelLabel: 'Gemma2 9B IT',
-    modelId: 'gemma2-9b-it',
-    label: 'Gemma2 Structured',
-    providerId: 'groq',
-    workflowType: 'structured_prompt',
-    modelIds: ['gemma2-9b-it'],
-    promptStrategy: 'structured',
-  },
-  {
-    configId: 'groq-llama-3.3-70b-versatile_verification',
-    modelLabel: 'Llama 3.3 70B Versatile',
-    modelId: 'llama-3.3-70b-versatile',
-    label: 'Llama 3.3 Verification',
-    providerId: 'groq',
-    workflowType: 'verification',
-    modelIds: ['llama-3.3-70b-versatile'],
-    promptStrategy: 'verification',
-  },
-]
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
@@ -190,7 +123,6 @@ function parseRunControls(body: Record<string, unknown>): RunControls {
     maxRetries: parseNumber(raw.maxRetries, legacyMaxRetries, 5),
     retryBackoffMode,
     maxOutputTokens: parseNumber(raw.maxOutputTokens, DEFAULT_RUN_CONTROLS.maxOutputTokens, 2000),
-    compactPromptMode: parseBoolean(raw.compactPromptMode, DEFAULT_RUN_CONTROLS.compactPromptMode),
     continueOnError: parseBoolean(raw.continueOnError, DEFAULT_RUN_CONTROLS.continueOnError),
     stopAfterFailureRatePercent: parseNumber(
       raw.stopAfterFailureRatePercent,
@@ -663,10 +595,6 @@ function getPromptStrategyLabel(promptStrategy: PromptStrategyId): PromptStrateg
   }
 }
 
-function getFallbackProviderConfigs(providerId: LlmProviderId): ProviderEvaluationConfig[] {
-  return providerId === 'groq' ? GROQ_FALLBACK_CONFIGS : OPENROUTER_FALLBACK_CONFIGS
-}
-
 function buildProviderConfigs(
   providerId: LlmProviderId,
   selectedModelIds: string[],
@@ -676,12 +604,7 @@ function buildProviderConfigs(
   const uniqueModelIds = Array.from(new Set(selectedModelIds.map((id) => id.trim()).filter(Boolean))).slice(0, 3)
 
   if (uniqueModelIds.length === 0) {
-    return getFallbackProviderConfigs(providerId).map((config) => ({
-      ...config,
-      configType: 'model_only',
-      promptTemplateId: defaultPromptTemplateId ?? config.promptTemplateId,
-      promptTemplateText: defaultPromptTemplateText ?? config.promptTemplateText,
-    }))
+    return []
   }
 
   return uniqueModelIds.map((modelId, index) => ({
@@ -1445,6 +1368,15 @@ export async function POST(request: Request) {
       ? benchmarkCases.filter((benchmarkCase) => input.caseIds.includes(benchmarkCase.id))
       : benchmarkCases
   const selectedCases = allSelectedCases.slice(0, input.runControls.maxCasesPerRun)
+  const useMock = process.env.USE_MOCK_LLM === 'true' || input.useMock
+
+  if (selectedCases.length === 0) {
+    return NextResponse.json({ error: 'Select at least one valid benchmark case.' }, { status: 400 })
+  }
+
+  if (!useMock && !input.apiKey) {
+    return NextResponse.json({ error: 'Connect an API key for the selected provider first.' }, { status: 400 })
+  }
 
   const allConfigs =
     input.benchmarkConfigs.length > 0
@@ -1463,6 +1395,9 @@ export async function POST(request: Request) {
           input.defaultPromptTemplateId,
         )
   const configs = allConfigs.slice(0, input.runControls.maxConfigsPerRun)
+  if (configs.length === 0) {
+    return NextResponse.json({ error: 'Select at least one valid benchmark configuration.' }, { status: 400 })
+  }
   const selectedModelCount = new Set(input.selectedModelIds.map((id) => id.trim()).filter(Boolean)).size
   const workflowConfigCount = configs.filter((config) => config.configType === 'workflow').length
   const modelOnlyConfigCount = configs.filter((config) => config.configType !== 'workflow').length
@@ -1477,7 +1412,7 @@ export async function POST(request: Request) {
       providerId: input.providerId,
       apiKey: input.apiKey,
       configs,
-      useMock: input.useMock,
+      useMock,
       runControls: input.runControls,
       delayBeforeFirstModel: caseResults.length > 0,
     })
@@ -1497,6 +1432,7 @@ export async function POST(request: Request) {
   return NextResponse.json({
     batchId: `batch-${Date.now()}`,
     createdAt: new Date().toISOString(),
+    evaluationMode: useMock ? 'mock' : 'live',
     providerId: input.providerId,
     caseCount: selectedCases.length,
     modelCount: selectedModelCount,

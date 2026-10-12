@@ -55,69 +55,26 @@ const DEFAULT_RUN_CONTROLS: RunControls = {
   maxRetries: 0,
   retryBackoffMode: 'provider_hint',
   maxOutputTokens: 1000,
-  compactPromptMode: false,
   continueOnError: true,
   stopAfterFailureRatePercent: 100,
   maxCasesPerRun: 1,
   maxConfigsPerRun: 1,
 }
 
-const OPENROUTER_FALLBACK_CONFIGS: ProviderEvaluationConfig[] = [
-  {
-    configId: 'meta-llama-llama-3.2-3b-instruct-free_baseline',
-    modelLabel: 'Llama 3.2 3B Instruct Free',
-    modelId: 'meta-llama/llama-3.2-3b-instruct:free',
-    promptStrategy: 'baseline',
-  },
-  {
-    configId: 'google-gemma-3-4b-it-free_structured',
-    modelLabel: 'Gemma 3 4B IT Free',
-    modelId: 'google/gemma-3-4b-it:free',
-    promptStrategy: 'structured',
-  },
-  {
-    configId: 'mistralai-mistral-7b-instruct-free_verification',
-    modelLabel: 'Mistral 7B Instruct Free',
-    modelId: 'mistralai/mistral-7b-instruct:free',
-    promptStrategy: 'verification',
-  },
-]
-
-const GROQ_FALLBACK_CONFIGS: ProviderEvaluationConfig[] = [
-  {
-    configId: 'groq-llama-3.1-8b-instant_baseline',
-    modelLabel: 'Llama 3.1 8B Instant',
-    modelId: 'llama-3.1-8b-instant',
-    promptStrategy: 'baseline',
-  },
-  {
-    configId: 'groq-gemma2-9b-it_structured',
-    modelLabel: 'Gemma2 9B IT',
-    modelId: 'gemma2-9b-it',
-    promptStrategy: 'structured',
-  },
-  {
-    configId: 'groq-llama-3.3-70b-versatile_verification',
-    modelLabel: 'Llama 3.3 70B Versatile',
-    modelId: 'llama-3.3-70b-versatile',
-    promptStrategy: 'verification',
-  },
-]
-
 const MOCK_MODELS: MockModel[] = [
   {
-    configId: 'gpt-4o-mini_baseline',
-    modelLabel: 'GPT-4o mini',
+    configId: 'mock_baseline',
+    modelLabel: 'Mock Baseline',
     promptStrategy: 'Baseline Prompt',
   },
   {
-    configId: 'gemini-flash_structured',
-    modelLabel: 'Gemini Flash',
+    configId: 'mock_structured',
+    modelLabel: 'Mock Structured',
     promptStrategy: 'Structured Prompt',
   },
   {
-    configId: 'llama-3.1_verification',
-    modelLabel: 'Llama 3.1',
+    configId: 'mock_verification',
+    modelLabel: 'Mock Verification',
     promptStrategy: 'Verification Prompt',
   },
 ]
@@ -505,10 +462,6 @@ function buildCustomProviderConfigs(
     promptTemplateId: defaultPromptTemplateId,
     promptTemplateText: defaultPromptTemplateText,
   }))
-}
-
-function getFallbackProviderConfigs(providerId: LlmProviderId): ProviderEvaluationConfig[] {
-  return providerId === 'groq' ? GROQ_FALLBACK_CONFIGS : OPENROUTER_FALLBACK_CONFIGS
 }
 
 function getProviderLabel(providerId: LlmProviderId): string {
@@ -903,13 +856,7 @@ async function buildProviderResults(
   const configs =
     executionConfig
       ? [executionConfig]
-    : selectedModelIds.length > 0
-      ? buildCustomProviderConfigs(selectedModelIds, defaultPromptTemplateText, defaultPromptTemplateId)
-      : getFallbackProviderConfigs(providerId).map((config) => ({
-          ...config,
-          promptTemplateId: defaultPromptTemplateId ?? config.promptTemplateId,
-          promptTemplateText: defaultPromptTemplateText ?? config.promptTemplateText,
-        }))
+      : buildCustomProviderConfigs(selectedModelIds, defaultPromptTemplateText, defaultPromptTemplateId)
 
   if (!apiKey) {
     return buildMissingApiKeyResults(configs)
@@ -980,6 +927,15 @@ export async function POST(request: Request) {
     const referenceChecks = deriveReferenceChecks(caseData, referenceDecision)
     const promptInjectionDetection = detectPromptInjectionInCase(caseData)
     const isMockMode = process.env.USE_MOCK_LLM === 'true'
+
+    if (!isMockMode && !apiKey) {
+      return NextResponse.json({ error: 'Connect an API key for the selected provider first.' }, { status: 400 })
+    }
+
+    if (!isMockMode && !executionConfig && selectedModelIds.length === 0) {
+      return NextResponse.json({ error: 'Select at least one model or benchmark configuration.' }, { status: 400 })
+    }
+
     const results =
       isMockMode
         ? buildMockResults(caseData, referenceDecision, referenceChecks)
